@@ -99,6 +99,7 @@ export function useSignalingEvents({
         nativeCursorOverlay: settings.nativeCursorOverlay,
         mouseSensitivity: settings.mouseSensitivity,
         mouseAcceleration: settings.mouseAcceleration,
+        mouseFlushIntervalMs: settings.mouseFlushIntervalMs,
         keyboardLayout: settings.keyboardLayout,
         clipboardPaste: settings.clipboardPaste,
         readClipboardText: readStreamClipboardText,

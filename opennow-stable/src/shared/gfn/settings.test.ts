@@ -10,6 +10,8 @@ import {
   normalizeRecordingBitrateMbps,
   normalizeRecordingFps,
   normalizeRecordingResolution,
+  normalizeMouseFlushIntervalPreference,
+  resolveMouseFlushIntervalMs,
   resolveRuntimePlatform,
 } from "./settings";
 
@@ -87,6 +89,18 @@ test("uses recording defaults that preserve live stream performance", () => {
   assert.equal(settings.recordingResolution, "720p");
   assert.equal(settings.recordingFps, 30);
   assert.equal(settings.recordingBitrateMbps, null);
+});
+
+test("normalizes and resolves the WebRTC mouse flush preference", () => {
+  assert.equal(createDefaultSettings("win32").mouseFlushIntervalMs, "auto");
+  assert.equal(normalizeMouseFlushIntervalPreference("auto"), "auto");
+  assert.equal(normalizeMouseFlushIntervalPreference(4), 4);
+  assert.equal(normalizeMouseFlushIntervalPreference("8"), 8);
+  assert.equal(normalizeMouseFlushIntervalPreference(16), 16);
+  assert.equal(normalizeMouseFlushIntervalPreference(2), "auto");
+  assert.equal(normalizeMouseFlushIntervalPreference("invalid"), "auto");
+  assert.equal(resolveMouseFlushIntervalMs("auto", 4), 4);
+  assert.equal(resolveMouseFlushIntervalMs(16, 4), 16);
 });
 
 test("normalizes recording settings to supported performance bounds", () => {

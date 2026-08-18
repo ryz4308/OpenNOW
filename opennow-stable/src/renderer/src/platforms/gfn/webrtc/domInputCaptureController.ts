@@ -1,4 +1,8 @@
-import type { KeyboardLayout } from "@shared/gfn";
+import {
+  resolveMouseFlushIntervalMs,
+  type KeyboardLayout,
+  type MouseFlushIntervalPreference,
+} from "@shared/gfn";
 
 import {
   INPUT_MOUSE_ABS,
@@ -50,6 +54,7 @@ interface DomInputCaptureDependencies {
 export interface MouseInputDiagnostics {
   flushBaseIntervalMs: number;
   flushIntervalMs: number;
+  fixedFlushInterval: boolean;
   packetsPerSecond: number;
   residualMagnitude: number;
   adaptiveFlushActive: boolean;
@@ -94,6 +99,7 @@ export class DomInputCaptureController {
   private readonly mouseDeltaFilter = new MouseDeltaFilter();
   private mouseSensitivity = 1;
   private mouseAccelerationPercent = 1;
+  private mouseFlushIntervalPreference: MouseFlushIntervalPreference;
   private mouseFlushBaseIntervalMs = MOUSE_FLUSH_NORMAL_MS;
   private mouseFlushIntervalMs = MOUSE_FLUSH_NORMAL_MS;
   private mouseAdaptiveFlushActive = false;
@@ -106,10 +112,16 @@ export class DomInputCaptureController {
 
   constructor(
     private readonly dependencies: DomInputCaptureDependencies,
-    options: { mouseSensitivity: number; mouseAccelerationPercent: number; nativeCursorOverlay: boolean },
+    options: {
+      mouseSensitivity: number;
+      mouseAccelerationPercent: number;
+      mouseFlushIntervalPreference: MouseFlushIntervalPreference;
+      nativeCursorOverlay: boolean;
+    },
   ) {
     this.mouseSensitivity = options.mouseSensitivity;
     this.mouseAccelerationPercent = options.mouseAccelerationPercent;
+    this.mouseFlushIntervalPreference = options.mouseFlushIntervalPreference;
     this.nativeCursorOverlayEnabled = options.nativeCursorOverlay;
   }
 
@@ -199,6 +211,7 @@ export class DomInputCaptureController {
     return {
       flushBaseIntervalMs: this.mouseFlushBaseIntervalMs,
       flushIntervalMs: this.mouseFlushIntervalMs,
+      fixedFlushInterval: this.mouseFlushIntervalPreference !== "auto",
       packetsPerSecond: this.mousePacketsPerSecond,
       residualMagnitude: Math.hypot(this.pendingMouseDxFloat, this.pendingMouseDyFloat),
       adaptiveFlushActive: this.mouseAdaptiveFlushActive,
@@ -499,11 +512,15 @@ export class DomInputCaptureController {
     const pointerMoveEventName: "pointerrawupdate" | "pointermove" | null = hasPointerRawUpdate
       ? "pointerrawupdate"
       : (typeof PointerEvent !== "undefined" ? "pointermove" : null);
-    this.mouseFlushBaseIntervalMs = hasPointerRawUpdate
+    const automaticFlushIntervalMs = hasPointerRawUpdate
       ? MOUSE_FLUSH_FAST_MS
       : hasCoalescedEvents
         ? MOUSE_FLUSH_NORMAL_MS
         : MOUSE_FLUSH_SAFE_MS;
+    this.mouseFlushBaseIntervalMs = resolveMouseFlushIntervalMs(
+      this.mouseFlushIntervalPreference,
+      automaticFlushIntervalMs,
+    );
     this.mouseFlushIntervalMs = this.mouseFlushBaseIntervalMs;
     this.mouseAdaptiveFlushActive = false;
     const mouseInitNow = performance.now();
@@ -519,7 +536,7 @@ export class DomInputCaptureController {
     this.mouseDeltaFilter.reset();
     this.mouseDeltaFilter.setRelaxedForRawInput(hasPointerRawUpdate);
     this.dependencies.log(
-      `Mouse input mode: ${pointerMoveEventName ?? "mousemove"}, coalesced=${hasCoalescedEvents ? "yes" : "no"}, flush=${this.mouseFlushIntervalMs}ms`,
+      `Mouse input mode: ${pointerMoveEventName ?? "mousemove"}, coalesced=${hasCoalescedEvents ? "yes" : "no"}, flush=${this.mouseFlushIntervalMs}ms (preference=${this.mouseFlushIntervalPreference})`,
     );
 
     const pointerScaleCache = {

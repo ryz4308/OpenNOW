@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useMemo, useState, type JSX } from "react";
 import { Keyboard } from "lucide-react";
-import type { KeyboardLayout, Settings } from "@shared/gfn";
+import type {
+  KeyboardLayout,
+  MouseFlushIntervalPreference,
+  Settings,
+} from "@shared/gfn";
 import { keyboardLayoutOptions } from "@shared/gfn";
 import { formatShortcutForDisplay, normalizeShortcut, shortcutFromKeyboardEvent } from "../../../shortcuts";
 import { useTranslation } from "../../../i18n";
@@ -505,6 +509,32 @@ export function SettingsInputSection({ settings, showAll, handleChange, handlePr
             />
           </div>
           <span className="settings-subtle-hint">{t("settings.input.mouseAcceleratorHint")}</span>
+        </div>
+
+        <div className="settings-row settings-row--simple">
+          <label className="settings-label settings-label--wrap" htmlFor="settings-input-mouse-flush-interval">
+            <span className="settings-label-title">
+              {t("settings.input.mouseFlushInterval")}
+              <span className="settings-inline-badge settings-inline-badge--beta">{t("app.labels.experimental")}</span>
+            </span>
+            <span className="settings-hint">{t("settings.input.mouseFlushIntervalHint")}</span>
+          </label>
+          <div className="settings-row-control">
+            <SelectDropdown
+              id="settings-input-mouse-flush-interval"
+              value={String(settings.mouseFlushIntervalMs)}
+              options={[
+                { value: "auto", label: t("settings.input.mouseFlushAuto") },
+                { value: "4", label: "4 ms" },
+                { value: "8", label: "8 ms" },
+                { value: "16", label: "16 ms" },
+              ]}
+              onChange={(value) => handleChange(
+                "mouseFlushIntervalMs",
+                (value === "auto" ? "auto" : Number(value)) as MouseFlushIntervalPreference,
+              )}
+            />
+          </div>
         </div>
 
           </div>

@@ -1,0 +1,77 @@
+name: Mouse flush test build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - mouse-flush-test
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mouse-flush-test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows-portable:
+    name: Windows x64 portable
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: opennow-stable
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      npm_config_audit: "false"
+      npm_config_fund: "false"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: opennow-stable/package-lock.json
+
+      - name: Use HTTPS for public GitHub npm dependencies
+        working-directory: .
+        shell: bash
+        run: |
+          git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
+          git config --global --add url."https://github.com/".insteadOf "git@github.com:"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Check source locale
+        run: npm run locales:check
+
+      - name: Build Electron app
+        run: npm run build
+
+      - name: Package portable Windows test build
+        run: npx electron-builder --publish never --win portable --x64
+
+      - name: Give the test executable an unmistakable name
+        shell: pwsh
+        run: |
+          $source = Get-ChildItem dist-release\*-portable-x64.exe | Select-Object -First 1
+          if (-not $source) { throw "Portable executable was not produced." }
+          Copy-Item $source.FullName dist-release\OpenNOW-mouse-flush-test-portable-x64.exe
+
+      - name: Upload portable executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenNOW-mouse-flush-test-windows-x64
+          path: opennow-stable/dist-release/OpenNOW-mouse-flush-test-portable-x64.exe
+          if-no-files-found: error
+          retention-days: 14

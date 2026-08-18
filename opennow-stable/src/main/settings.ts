@@ -22,6 +22,7 @@ import {
   normalizeRecordingBitrateMbps,
   normalizeRecordingFps,
   normalizeRecordingResolution,
+  normalizeMouseFlushIntervalPreference,
 } from "@shared/gfn";
 import type { StatsOverlayPosition } from "@shared/gfn";
 
@@ -308,6 +309,12 @@ export class SettingsManager {
     const recordingFps = normalizeRecordingFps(settings.recordingFps);
     if (settings.recordingFps !== recordingFps) {
       settings.recordingFps = recordingFps;
+      migrated = true;
+    }
+
+    const mouseFlushIntervalMs = normalizeMouseFlushIntervalPreference(settings.mouseFlushIntervalMs);
+    if (settings.mouseFlushIntervalMs !== mouseFlushIntervalMs) {
+      settings.mouseFlushIntervalMs = mouseFlushIntervalMs;
       migrated = true;
     }
 

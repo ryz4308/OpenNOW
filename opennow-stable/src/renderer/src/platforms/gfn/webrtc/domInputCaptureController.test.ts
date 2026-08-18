@@ -2,6 +2,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
+import type { MouseFlushIntervalPreference } from "@shared/gfn";
 
 import { INPUT_MOUSE_REL, InputEncoder } from "../inputProtocol";
 import { DomInputCaptureController } from "./domInputCaptureController";
@@ -65,6 +66,7 @@ class FakeEventTarget {
 function installMouseHarness(options: {
   mouseSensitivity: number;
   resolution: string;
+  mouseFlushIntervalPreference?: MouseFlushIntervalPreference;
 }): {
   controller: DomInputCaptureController;
   dispatchMouseMove: (movementX: number, timeStamp: number) => void;
@@ -148,6 +150,7 @@ function installMouseHarness(options: {
     {
       mouseSensitivity: options.mouseSensitivity,
       mouseAccelerationPercent: 1,
+      mouseFlushIntervalPreference: options.mouseFlushIntervalPreference ?? "auto",
       nativeCursorOverlay: false,
     },
   );
@@ -207,6 +210,25 @@ function installMouseHarness(options: {
     },
   };
 }
+
+test("fixed mouse flush preference overrides automatic platform detection", () => {
+  const automaticHarness = installMouseHarness({ mouseSensitivity: 1, resolution: "1920x1080" });
+  const fixedHarness = installMouseHarness({
+    mouseSensitivity: 1,
+    resolution: "1920x1080",
+    mouseFlushIntervalPreference: 4,
+  });
+  try {
+    // The harness has no PointerEvent support, so automatic mode selects the
+    // conservative 16 ms path. A fixed preference must remain exact.
+    assert.equal(automaticHarness.controller.getMouseDiagnostics().flushBaseIntervalMs, 16);
+    assert.equal(fixedHarness.controller.getMouseDiagnostics().flushBaseIntervalMs, 4);
+    assert.equal(fixedHarness.controller.getMouseDiagnostics().flushIntervalMs, 4);
+  } finally {
+    fixedHarness.restoreGlobals();
+    automaticHarness.restoreGlobals();
+  }
+});
 
 test("negative half-pixel residual parks without synchronous recursion and resumes on input", () => {
   const harness = installMouseHarness({ mouseSensitivity: 0.5, resolution: "4x4" });

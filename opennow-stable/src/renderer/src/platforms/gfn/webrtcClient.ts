@@ -8,6 +8,7 @@ import type {
   MicrophoneMode,
   NativeTransitionDiagnostics,
   KeyboardLayout,
+  MouseFlushIntervalPreference,
 } from "@shared/gfn";
 
 import {
@@ -171,6 +172,8 @@ interface ClientOptions {
   mouseSensitivity?: number;
   /** Software acceleration strength percentage (1-150) */
   mouseAcceleration?: number;
+  /** WebRTC mouse-movement coalescing interval override. */
+  mouseFlushIntervalMs?: MouseFlushIntervalPreference;
   /** Selected GFN keyboard layout for remote physical OEM key mapping. */
   keyboardLayout?: KeyboardLayout;
   /** Enable official GFN clipboard custom-message paste support. */
@@ -530,6 +533,7 @@ export class GfnWebRtcClient {
           1,
           Math.min(150, Math.round(options.mouseAcceleration ?? 1)),
         ),
+        mouseFlushIntervalPreference: options.mouseFlushIntervalMs ?? "auto",
         nativeCursorOverlay: options.nativeCursorOverlay !== false,
       },
     );
@@ -1224,11 +1228,19 @@ export class GfnWebRtcClient {
     this.diagnostics.mousePacketsPerSecond = mouseDiagnostics.packetsPerSecond;
     this.diagnostics.mouseResidualMagnitude = mouseDiagnostics.residualMagnitude;
 
-    // Intentional adaptive coalesce: only when mouse moves ride the reliable
-    // channel (PR mouse keeps the fixed 4/8/16 ms official interval). Skip while
-    // pointerrawupdate forced immediate flush (interval 0).
+    // An explicit test preference must remain fixed so 4/8/16 ms runs are
+    // comparable. Auto mode keeps the existing official behavior: PR mouse uses
+    // the platform-detected base interval, while reliable mouse may adapt under
+    // backpressure. Skip all adjustment when pointerrawupdate forced immediate
+    // flush (interval 0).
     if (mouseDiagnostics.flushIntervalMs <= 0 || mouseDiagnostics.flushBaseIntervalMs <= 0) {
       this.domInputController.setAdaptiveFlushInterval(mouseDiagnostics.flushIntervalMs, false);
+    } else if (mouseDiagnostics.fixedFlushInterval) {
+      this.domInputController.setAdaptiveFlushInterval(
+        mouseDiagnostics.flushBaseIntervalMs,
+        false,
+      );
+      this.diagnostics.mouseFlushIntervalMs = mouseDiagnostics.flushBaseIntervalMs;
     } else if (this.canSendInputTypePartiallyReliable(INPUT_MOUSE_REL)) {
       // Official GFN keeps a fixed coalesce interval for PR mouse.
       this.domInputController.setAdaptiveFlushInterval(

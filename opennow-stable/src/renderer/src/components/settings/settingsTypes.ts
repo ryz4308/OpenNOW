@@ -172,6 +172,9 @@ export const SETTINGS_SCOPE_SEARCH_TERMS: Record<SettingsSearchScopeId, readonly
   input: [
     "input",
     "mouse",
+    "mouse flush",
+    "mouse interval",
+    "input packet rate",
     "keyboard layout",
     "shortcut",
     "hotkey",

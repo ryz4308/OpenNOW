@@ -23,6 +23,9 @@ export type MicrophoneMode = "disabled" | "push-to-talk" | "voice-activity";
 export type StatsOverlayPosition = "bottom-left" | "bottom-right" | "top-left" | "top-right";
 export type AspectRatio = "16:9" | "16:10" | "21:9" | "32:9";
 export type ErrorReportingConsent = "unset" | "granted" | "denied";
+export const MOUSE_FLUSH_INTERVAL_OPTIONS = [4, 8, 16] as const;
+export type MouseFlushIntervalMs = typeof MOUSE_FLUSH_INTERVAL_OPTIONS[number];
+export type MouseFlushIntervalPreference = "auto" | MouseFlushIntervalMs;
 export const RECORDING_RESOLUTION_OPTIONS = ["720p", "1080p", "1440p"] as const;
 export type RecordingResolution = typeof RECORDING_RESOLUTION_OPTIONS[number];
 export const RECORDING_FPS_OPTIONS = [30, 60] as const;
@@ -92,6 +95,8 @@ export interface Settings {
   nativeCursorOverlay: boolean;
   mouseSensitivity: number;
   mouseAcceleration: number;
+  /** WebRTC mouse-movement coalescing interval; auto preserves platform detection. */
+  mouseFlushIntervalMs: MouseFlushIntervalPreference;
   shortcutToggleStats: string;
   shortcutTogglePointerLock: string;
   shortcutToggleFullscreen: string;
@@ -253,6 +258,23 @@ export function normalizeRecordingBitrateMbps(raw: unknown): number | null {
   return Math.max(1, Math.min(MAX_RECORDING_BITRATE_MBPS, Math.round(value)));
 }
 
+export function normalizeMouseFlushIntervalPreference(raw: unknown): MouseFlushIntervalPreference {
+  if (raw === "auto") {
+    return "auto";
+  }
+  const value = Number(raw);
+  return MOUSE_FLUSH_INTERVAL_OPTIONS.includes(value as MouseFlushIntervalMs)
+    ? value as MouseFlushIntervalMs
+    : "auto";
+}
+
+export function resolveMouseFlushIntervalMs(
+  preference: MouseFlushIntervalPreference,
+  automaticIntervalMs: MouseFlushIntervalMs,
+): MouseFlushIntervalMs {
+  return preference === "auto" ? automaticIntervalMs : preference;
+}
+
 export function createPlatformShortcutDefaults(platform: string): PlatformShortcutDefaults {
   const isMacOs = resolveRuntimePlatform(platform) === "darwin";
   const sidebarToggle = isMacOs ? "Meta+G" : "Ctrl+G";
@@ -297,6 +319,7 @@ export function createDefaultSettings(platform: string): Settings {
     nativeCursorOverlay: true,
     mouseSensitivity: 1,
     mouseAcceleration: 1,
+    mouseFlushIntervalMs: "auto",
     ...shortcuts.bindings,
     microphoneMode: "disabled",
     microphoneDeviceId: "",
