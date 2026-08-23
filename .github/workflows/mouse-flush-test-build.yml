@@ -1,5 +1,7 @@
 name: Resilient stream test build
 
+# Custom diagnostic build: resilient SDP profile + diagnostics export v3.
+
 on:
   workflow_dispatch:
   push:
