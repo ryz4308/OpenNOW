@@ -31,11 +31,21 @@ export interface StreamDiagnostics {
   rttMs: number;
   transportType: "udp" | "tcp" | "unknown";
   localCandidateType: string;
+  remoteCandidateType: string;
+  iceConnectionState: RTCIceConnectionState | "closed";
+  signalingState: RTCSignalingState | "closed";
+  dataChannels: string[];
 
   // Frame counters
   framesReceived: number;
   framesDecoded: number;
   framesDropped: number;
+  keyFramesDecoded: number;
+  nackCount: number;
+  pliCount: number;
+  firCount: number;
+  freezeCount: number;
+  totalFreezesDurationMs: number;
 
   // Timing
   decodeTimeMs: number;
