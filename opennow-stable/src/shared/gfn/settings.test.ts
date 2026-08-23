@@ -103,6 +103,10 @@ test("normalizes and resolves the WebRTC mouse flush preference", () => {
   assert.equal(resolveMouseFlushIntervalMs(16, 4), 16);
 });
 
+test("keeps experimental network recovery disabled by default", () => {
+  assert.equal(createDefaultSettings("win32").autoRecoveryBitrate, false);
+});
+
 test("normalizes recording settings to supported performance bounds", () => {
   assert.equal(normalizeRecordingResolution("1080p"), "1080p");
   assert.equal(normalizeRecordingResolution("2160p"), "720p");

@@ -279,6 +279,18 @@ export function StreamStatsHud({
         }),
       );
     }
+    if (stats.networkRecoveryEnabled) {
+      lines.push(
+        t("stream.stats.advancedNetworkRecovery", {
+          state: stats.networkRecoveryActive
+            ? t("stream.stats.activeValue")
+            : t("stream.stats.idleValue"),
+          attempts: stats.networkRecoveryAttempts,
+          action: stats.networkRecoveryAction,
+          bitrate: formatOptionalBitrate(stats.networkRecoveryTargetBitrateKbps),
+        }),
+      );
+    }
     if (stats.nativeTransitionSummary || stats.nativeQueueMode || stats.nativeCapsFramerate) {
       const requested = typeof stats.nativeRequestedFps === "number"
         ? t("stream.stats.advancedRequestedFps", { value: stats.nativeRequestedFps })

@@ -71,6 +71,11 @@ export interface StreamDiagnostics {
   decoderPressureActive: boolean;
   decoderRecoveryAttempts: number;
   decoderRecoveryAction: string;
+  networkRecoveryEnabled: boolean;
+  networkRecoveryActive: boolean;
+  networkRecoveryAttempts: number;
+  networkRecoveryAction: string;
+  networkRecoveryTargetBitrateKbps: number;
   nativeRequestedFps?: number;
   nativeCapsFramerate?: string;
   nativeQueueMode?: NativeQueueMode;

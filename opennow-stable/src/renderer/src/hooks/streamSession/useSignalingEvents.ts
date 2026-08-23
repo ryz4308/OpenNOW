@@ -100,6 +100,7 @@ export function useSignalingEvents({
         mouseSensitivity: settings.mouseSensitivity,
         mouseAcceleration: settings.mouseAcceleration,
         mouseFlushIntervalMs: settings.mouseFlushIntervalMs,
+        autoRecoveryBitrate: settings.autoRecoveryBitrate,
         keyboardLayout: settings.keyboardLayout,
         clipboardPaste: settings.clipboardPaste,
         readClipboardText: readStreamClipboardText,

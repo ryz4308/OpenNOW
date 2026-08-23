@@ -97,6 +97,8 @@ export interface Settings {
   mouseAcceleration: number;
   /** WebRTC mouse-movement coalescing interval; auto preserves platform detection. */
   mouseFlushIntervalMs: MouseFlushIntervalPreference;
+  /** WebRTC-only experimental recovery mode that lowers the bitrate ceiling under network loss. */
+  autoRecoveryBitrate: boolean;
   shortcutToggleStats: string;
   shortcutTogglePointerLock: string;
   shortcutToggleFullscreen: string;
@@ -320,6 +322,7 @@ export function createDefaultSettings(platform: string): Settings {
     mouseSensitivity: 1,
     mouseAcceleration: 1,
     mouseFlushIntervalMs: "auto",
+    autoRecoveryBitrate: false,
     ...shortcuts.bindings,
     microphoneMode: "disabled",
     microphoneDeviceId: "",

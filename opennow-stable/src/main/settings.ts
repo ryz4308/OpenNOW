@@ -318,6 +318,11 @@ export class SettingsManager {
       migrated = true;
     }
 
+    if (typeof settings.autoRecoveryBitrate !== "boolean") {
+      settings.autoRecoveryBitrate = false;
+      migrated = true;
+    }
+
     if (typeof settings.steamControllerCompatibilityMode !== "boolean") {
       settings.steamControllerCompatibilityMode = false;
       migrated = true;

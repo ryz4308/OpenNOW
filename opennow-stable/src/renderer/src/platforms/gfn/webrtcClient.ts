@@ -66,6 +66,9 @@ import {
   DecoderPressureController,
 } from "./webrtc/decoderPressureController";
 import {
+  NetworkRecoveryController,
+} from "./webrtc/networkRecoveryController";
+import {
   InputChannelPolicyController,
   type RiInputCapabilities,
 } from "./webrtc/inputChannelPolicy";
@@ -174,6 +177,8 @@ interface ClientOptions {
   mouseAcceleration?: number;
   /** WebRTC mouse-movement coalescing interval override. */
   mouseFlushIntervalMs?: MouseFlushIntervalPreference;
+  /** WebRTC-only bitrate recovery mode for lossy network conditions. */
+  autoRecoveryBitrate?: boolean;
   /** Selected GFN keyboard layout for remote physical OEM key mapping. */
   keyboardLayout?: KeyboardLayout;
   /** Enable official GFN clipboard custom-message paste support. */
@@ -363,6 +368,7 @@ export class GfnWebRtcClient {
   private inputQueueDropCount = 0;
 
   private readonly decoderPressureController: DecoderPressureController;
+  private readonly networkRecoveryController: NetworkRecoveryController;
   private readonly inputChannelPolicyController: InputChannelPolicyController;
   private readonly gamepadController: GamepadController;
   private readonly domInputController: DomInputCaptureController;
@@ -438,6 +444,11 @@ export class GfnWebRtcClient {
     decoderPressureActive: false,
     decoderRecoveryAttempts: 0,
     decoderRecoveryAction: "none",
+    networkRecoveryEnabled: false,
+    networkRecoveryActive: false,
+    networkRecoveryAttempts: 0,
+    networkRecoveryAction: "none",
+    networkRecoveryTargetBitrateKbps: 0,
     nativeRequestedFps: undefined,
     nativeCapsFramerate: undefined,
     nativeQueueMode: undefined,
@@ -464,6 +475,18 @@ export class GfnWebRtcClient {
         this.diagnostics.decoderRecoveryAction = state.recoveryAction;
       },
     });
+    this.networkRecoveryController = new NetworkRecoveryController({
+      log: (message) => this.log(message),
+      setMaxBitrateKbps: (kbps) => this.setMaxBitrateKbps(kbps),
+      onStateChange: (state) => {
+        this.diagnostics.networkRecoveryEnabled = state.enabled;
+        this.diagnostics.networkRecoveryActive = state.active;
+        this.diagnostics.networkRecoveryAttempts = state.recoveryAttempts;
+        this.diagnostics.networkRecoveryAction = state.recoveryAction;
+        this.diagnostics.networkRecoveryTargetBitrateKbps = state.targetBitrateKbps;
+      },
+    });
+    this.networkRecoveryController.setEnabled(Boolean(options.autoRecoveryBitrate));
     this.inputChannelPolicyController = new InputChannelPolicyController(
       this.riInputCapabilities,
       {
@@ -823,6 +846,7 @@ export class GfnWebRtcClient {
     this.videoDecodeStallWarningSent = false;
     this.statsChannelVersionLogged = false;
     this.decoderPressureController.reset();
+    this.networkRecoveryController.reset();
     const mouseDiagnostics = this.domInputController.getMouseDiagnostics();
     this.diagnostics = {
       connectionState: this.pc?.connectionState ?? "closed",
@@ -878,6 +902,11 @@ export class GfnWebRtcClient {
       decoderPressureActive: false,
       decoderRecoveryAttempts: 0,
       decoderRecoveryAction: "none",
+      networkRecoveryEnabled: this.options.autoRecoveryBitrate === true,
+      networkRecoveryActive: false,
+      networkRecoveryAttempts: 0,
+      networkRecoveryAction: "none",
+      networkRecoveryTargetBitrateKbps: 0,
       nativeRequestedFps: undefined,
       nativeCapsFramerate: undefined,
       nativeQueueMode: undefined,
@@ -915,6 +944,7 @@ export class GfnWebRtcClient {
     this.currentResolution = settings.resolution;
     this.isHdr = settings.colorQuality.startsWith("10bit");
     this.decoderPressureController.initializeBitrate(settings.maxBitrateKbps);
+    this.networkRecoveryController.initializeBitrate(settings.maxBitrateKbps);
 
     this.diagnostics.resolution = settings.resolution;
     this.diagnostics.codec = codec;
@@ -924,7 +954,11 @@ export class GfnWebRtcClient {
       : "Chromium GPU decode";
     this.diagnostics.colorCodec = describeColorQuality(settings.colorQuality);
     this.diagnostics.isHdr = this.isHdr;
-    this.diagnostics.targetBitrateKbps = this.decoderPressureController.targetBitrateKbps;
+    this.diagnostics.targetBitrateKbps = Math.min(
+      this.decoderPressureController.targetBitrateKbps,
+      this.networkRecoveryController.targetBitrateKbps,
+    );
+    this.diagnostics.networkRecoveryTargetBitrateKbps = this.networkRecoveryController.targetBitrateKbps;
     this.diagnostics.decodeFps = nativeRendererActive ? settings.fps : 0;
     this.diagnostics.receiveFps = 0;
     this.diagnostics.renderFps = nativeRendererActive ? settings.fps : 0;
@@ -1189,18 +1223,31 @@ export class GfnWebRtcClient {
       await this.decoderPressureController.recover(pressureSignal);
     }
 
-    const bitrateDiagnostics = computeBitrateDiagnostics(
-      this.decoderPressureController.targetBitrateKbps,
-      activePair,
-    );
-    this.diagnostics.targetBitrateKbps = bitrateDiagnostics.targetBitrateKbps;
-    this.diagnostics.availableBitrateKbps = bitrateDiagnostics.availableBitrateKbps;
-
     // RTT from active candidate pair
     if (activePair?.currentRoundTripTime !== undefined) {
       const rtt = Number(activePair.currentRoundTripTime);
       this.diagnostics.rttMs = Math.round(rtt * 1000 * 10) / 10;
     }
+
+    await this.networkRecoveryController.recover({
+      packetLossPercent: this.diagnostics.packetLossPercent,
+      rttMs: this.diagnostics.rttMs,
+      jitterMs: this.diagnostics.jitterMs,
+      receiveFps: this.diagnostics.receiveFps,
+      decodeFps: this.diagnostics.decodeFps,
+    });
+
+    const effectiveTargetBitrateKbps = Math.min(
+      this.decoderPressureController.targetBitrateKbps,
+      this.networkRecoveryController.targetBitrateKbps,
+    );
+    const bitrateDiagnostics = computeBitrateDiagnostics(
+      effectiveTargetBitrateKbps,
+      activePair,
+    );
+    this.diagnostics.targetBitrateKbps = bitrateDiagnostics.targetBitrateKbps;
+    this.diagnostics.availableBitrateKbps = bitrateDiagnostics.availableBitrateKbps;
+    this.diagnostics.networkRecoveryTargetBitrateKbps = this.networkRecoveryController.targetBitrateKbps;
 
     const reliableBufferedAmount = this.reliableInputChannel?.bufferedAmount ?? 0;
     const partiallyReliableBufferedAmount = this.partiallyReliableInputChannel?.bufferedAmount ?? 0;
@@ -2012,6 +2059,7 @@ export class GfnWebRtcClient {
     const negotiatedPartialReliable = this.riInputCapabilities.partialReliableThresholdMs;
     this.partialReliableThresholdMs = negotiatedPartialReliable ?? GfnWebRtcClient.DEFAULT_PARTIAL_RELIABLE_THRESHOLD_MS;
     this.decoderPressureController.initializeBitrate(settings.maxBitrateKbps);
+    this.networkRecoveryController.initializeBitrate(settings.maxBitrateKbps);
     this.log(
       `Input channel policy: partial reliable threshold=${this.partialReliableThresholdMs}ms${negotiatedPartialReliable === null ? " (fallback)" : ""}, hidMask=0x${this.riInputCapabilities.hidDeviceMask.toString(16)}, prGamepadMask=0x${this.riInputCapabilities.enablePartiallyReliableTransferGamepad.toString(16)}, prHidMask=0x${this.riInputCapabilities.enablePartiallyReliableTransferHid.toString(16)}`,
     );
