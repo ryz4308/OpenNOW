@@ -11,6 +11,7 @@ test("extracts UDP and local candidate type from the nominated pair", () => {
       state: "succeeded",
       nominated: true,
       localCandidateId: "local-1",
+      remoteCandidateId: "remote-1",
     },
     {
       id: "local-1",
@@ -18,11 +19,18 @@ test("extracts UDP and local candidate type from the nominated pair", () => {
       protocol: "UDP",
       candidateType: "srflx",
     },
+    {
+      id: "remote-1",
+      type: "remote-candidate",
+      protocol: "udp",
+      candidateType: "host",
+    },
   ]);
 
   assert.equal(result.activePair?.id, "pair-1");
   assert.equal(result.transportType, "udp");
   assert.equal(result.localCandidateType, "srflx");
+  assert.equal(result.remoteCandidateType, "host");
 });
 
 test("uses the transport-selected TCP pair when nomination is unavailable", () => {
@@ -51,6 +59,7 @@ test("uses the transport-selected TCP pair when nomination is unavailable", () =
   assert.equal(result.activePair?.id, "pair-tcp");
   assert.equal(result.transportType, "tcp");
   assert.equal(result.localCandidateType, "relay");
+  assert.equal(result.remoteCandidateType, "");
 });
 
 test("returns unknown transport when the active pair has no candidate details", () => {
@@ -72,6 +81,7 @@ test("returns unknown transport when the active pair has no candidate details", 
       },
       transportType: "unknown",
       localCandidateType: "",
+      remoteCandidateType: "",
     },
   );
 });
