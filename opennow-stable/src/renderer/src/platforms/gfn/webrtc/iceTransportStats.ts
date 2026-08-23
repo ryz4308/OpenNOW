@@ -4,6 +4,7 @@ export interface ActiveIceTransportStats {
   activePair: Record<string, unknown> | null;
   transportType: IceTransportType;
   localCandidateType: string;
+  remoteCandidateType: string;
 }
 
 function protocolFrom(value: unknown): Exclude<IceTransportType, "unknown"> | null {
@@ -16,6 +17,7 @@ export function extractActiveIceTransportStats(
 ): ActiveIceTransportStats {
   const candidatePairs = new Map<string, Record<string, unknown>>();
   const localCandidates = new Map<string, Record<string, unknown>>();
+  const remoteCandidates = new Map<string, Record<string, unknown>>();
   const transports = new Map<string, Record<string, unknown>>();
   let nominatedPair: Record<string, unknown> | null = null;
 
@@ -30,6 +32,8 @@ export function extractActiveIceTransportStats(
       }
     } else if (stats.type === "local-candidate" && id) {
       localCandidates.set(id, stats);
+    } else if (stats.type === "remote-candidate" && id) {
+      remoteCandidates.set(id, stats);
     } else if (stats.type === "transport" && id) {
       transports.set(id, stats);
     }
@@ -55,6 +59,7 @@ export function extractActiveIceTransportStats(
       activePair: null,
       transportType: "unknown",
       localCandidateType: "",
+      remoteCandidateType: "",
     };
   }
 
@@ -67,6 +72,10 @@ export function extractActiveIceTransportStats(
     ? activePair.localCandidateId
     : "";
   const localCandidate = localCandidateId ? localCandidates.get(localCandidateId) : undefined;
+  const remoteCandidateId = typeof activePair.remoteCandidateId === "string"
+    ? activePair.remoteCandidateId
+    : "";
+  const remoteCandidate = remoteCandidateId ? remoteCandidates.get(remoteCandidateId) : undefined;
   const transportType =
     protocolFrom(selectedTransport?.protocol) ??
     protocolFrom(activePair.protocol) ??
@@ -75,10 +84,14 @@ export function extractActiveIceTransportStats(
   const localCandidateType = typeof localCandidate?.candidateType === "string"
     ? localCandidate.candidateType.toLowerCase()
     : "";
+  const remoteCandidateType = typeof remoteCandidate?.candidateType === "string"
+    ? remoteCandidate.candidateType.toLowerCase()
+    : "";
 
   return {
     activePair,
     transportType,
     localCandidateType,
+    remoteCandidateType,
   };
 }
