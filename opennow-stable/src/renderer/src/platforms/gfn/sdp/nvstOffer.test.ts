@@ -3,7 +3,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildNvstSdp } from "./nvstOffer";
+import { buildNvstSdp, resolveNvstQualityProfile } from "./nvstOffer";
 
 test("buildNvstSdp includes stream quality and partially reliable input parameters", () => {
   const sdp = buildNvstSdp({
@@ -200,4 +200,47 @@ test("buildNvstSdp floors low bitrate and applies protocol input defaults", () =
   assert.equal(lines.has("a=ri.enablePartiallyReliableTransferGamepad:15"), true);
   assert.equal(lines.has("a=ri.enablePartiallyReliableTransferHid:4294967295"), true);
   assert.equal(sdp.endsWith("\n"), true);
+});
+
+test("buildNvstSdp applies the experimental resilient network profile", () => {
+  const profile = resolveNvstQualityProfile({
+    maxBitrateKbps: 20000,
+    resilientNetworkProfile: true,
+  });
+  assert.deepEqual(profile, {
+    maxBitrateKbps: 14000,
+    startupBitrateKbps: 4000,
+    fecRateDropWindow: 6,
+    fecRepairMinPercent: 8,
+    fecRepairPercent: 10,
+    fecRepairMaxPercent: 40,
+  });
+
+  const sdp = buildNvstSdp({
+    width: 1920,
+    height: 1080,
+    fps: 60,
+    maxBitrateKbps: 20000,
+    partialReliableThresholdMs: 16,
+    codec: "H264",
+    colorQuality: "8bit_420",
+    resilientNetworkProfile: true,
+    credentials: {
+      ufrag: "ufrag-test",
+      pwd: "password-test",
+      fingerprint: "AA:BB:CC",
+    },
+  });
+  const lines = new Set(sdp.split("\n"));
+  for (const line of [
+    "a=video.initialBitrateKbps:4000",
+    "a=video.initialPeakBitrateKbps:4000",
+    "a=vqos.bw.maximumBitrateKbps:14000",
+    "a=vqos.fec.rateDropWindow:6",
+    "a=vqos.fec.repairMinPercent:8",
+    "a=vqos.fec.repairPercent:10",
+    "a=vqos.fec.repairMaxPercent:40",
+  ]) {
+    assert.equal(lines.has(line), true, `missing resilient SDP line: ${line}`);
+  }
 });
