@@ -1,4 +1,4 @@
-name: Mouse flush test build
+name: Resilient stream test build
 
 on:
   workflow_dispatch:
@@ -66,12 +66,12 @@ jobs:
         run: |
           $source = Get-ChildItem dist-release\*-portable-x64.exe | Select-Object -First 1
           if (-not $source) { throw "Portable executable was not produced." }
-          Copy-Item $source.FullName dist-release\OpenNOW-mouse-flush-test-portable-x64.exe
+          Copy-Item $source.FullName dist-release\OpenNOW-resilient-stream-test-portable-x64.exe
 
       - name: Upload portable executable
         uses: actions/upload-artifact@v4
         with:
-          name: OpenNOW-mouse-flush-test-windows-x64
-          path: opennow-stable/dist-release/OpenNOW-mouse-flush-test-portable-x64.exe
+          name: OpenNOW-resilient-stream-test-windows-x64
+          path: opennow-stable/dist-release/OpenNOW-resilient-stream-test-portable-x64.exe
           if-no-files-found: error
           retention-days: 14
