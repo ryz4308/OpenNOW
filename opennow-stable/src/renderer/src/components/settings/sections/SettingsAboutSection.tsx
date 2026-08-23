@@ -5,6 +5,7 @@ import { useTranslation } from "../../../i18n";
 import { formatBytes, formatUpdaterTimestamp, getUpdaterBadgeLabel } from "../settingsFormatters";
 import { MotionSpinner } from "../../MotionSpinner";
 import { SelectDropdown } from "../../ui/SelectDropdown";
+import { streamDiagnosticsRecorder } from "../../../utils/diagnosticsRecorder";
 
 export interface SettingsAboutSectionProps {
   settings: Settings;
@@ -296,12 +297,28 @@ export function SettingsAboutSection({
             className="settings-export-logs-btn"
             onClick={async () => {
               try {
-                const logs = await window.openNow.exportLogs("text");
-                const blob = new Blob([logs], { type: "text/plain" });
+                const rawLogs = await window.openNow.exportLogs("json");
+                let appLogs: unknown = rawLogs;
+                try {
+                  appLogs = JSON.parse(rawLogs);
+                } catch {
+                  // Keep the redacted raw value when the main process has no JSON capture yet.
+                }
+                const report = {
+                  schemaVersion: 3,
+                  generatedAt: new Date().toISOString(),
+                  environment: {
+                    platform: navigator.platform,
+                    userAgent: navigator.userAgent,
+                  },
+                  appLogs,
+                  streamDiagnostics: streamDiagnosticsRecorder.exportReport(),
+                };
+                const blob = new Blob([JSON.stringify(report, null, 2)], { type: "application/json" });
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement("a");
                 a.href = url;
-                a.download = `opennow-logs-${new Date().toISOString().replace(/[:.]/g, "-")}.txt`;
+                a.download = `opennow-diagnostics-v3-${new Date().toISOString().replace(/[:.]/g, "-")}.json`;
                 document.body.appendChild(a);
                 a.click();
                 document.body.removeChild(a);
