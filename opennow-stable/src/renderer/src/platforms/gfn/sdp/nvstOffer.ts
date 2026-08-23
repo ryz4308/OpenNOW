@@ -32,6 +32,53 @@ interface NvstParams {
   enablePartiallyReliableTransferGamepad?: number;
   enablePartiallyReliableTransferHid?: number;
   dynamicSplitEncodeUpdatesEnabled?: boolean;
+  /** Experimental receiver-side profile negotiated before the stream starts. */
+  resilientNetworkProfile?: boolean;
+}
+
+export interface NvstQualityProfile {
+  maxBitrateKbps: number;
+  startupBitrateKbps: number;
+  fecRateDropWindow: number;
+  fecRepairMinPercent: number;
+  fecRepairPercent: number;
+  fecRepairMaxPercent: number;
+}
+
+/**
+ * Resolve the bitrate/FEC envelope sent to NVIDIA in nvstSdp.
+ *
+ * The resilient profile deliberately leaves headroom below the user's cap so
+ * short Wi-Fi bursts do not immediately overflow the path. It also starts at
+ * the official 4 Mbps floor and asks the server for moderately stronger FEC.
+ * This is applied before session creation; Chromium cannot change the bitrate
+ * of the receiver-only video stream through RTCRtpSender.setParameters().
+ */
+export function resolveNvstQualityProfile(params: Pick<NvstParams, "maxBitrateKbps" | "resilientNetworkProfile">): NvstQualityProfile {
+  const requestedMax = Math.max(OFFICIAL_MIN_BITRATE_KBPS, Math.floor(params.maxBitrateKbps));
+  if (!params.resilientNetworkProfile) {
+    return {
+      maxBitrateKbps: requestedMax,
+      startupBitrateKbps: Math.max(OFFICIAL_MIN_BITRATE_KBPS, Math.round(requestedMax / 4)),
+      fecRateDropWindow: 10,
+      fecRepairMinPercent: 5,
+      fecRepairPercent: 5,
+      fecRepairMaxPercent: 35,
+    };
+  }
+
+  const maxBitrateKbps = Math.max(
+    OFFICIAL_MIN_BITRATE_KBPS,
+    Math.floor(requestedMax * 0.7),
+  );
+  return {
+    maxBitrateKbps,
+    startupBitrateKbps: OFFICIAL_MIN_BITRATE_KBPS,
+    fecRateDropWindow: 6,
+    fecRepairMinPercent: 8,
+    fecRepairPercent: 10,
+    fecRepairMaxPercent: 40,
+  };
 }
 
 // This builder targets the WEB (Chromium WebRTC) transport and is aligned
@@ -42,8 +89,9 @@ interface NvstParams {
 export function buildNvstSdp(params: NvstParams): string {
   console.log(`[SDP] buildNvstSdp: ${params.width}x${params.height}@${params.fps}fps, codec=${params.codec}, colorQuality=${params.colorQuality}, maxBitrate=${params.maxBitrateKbps}kbps`);
   console.log(`[SDP] buildNvstSdp: ICE ufrag=${params.credentials.ufrag}, pwd=${params.credentials.pwd.slice(0, 8)}..., fingerprint=${params.credentials.fingerprint.slice(0, 20)}...`);
-  const maxBitrate = Math.max(OFFICIAL_MIN_BITRATE_KBPS, Math.floor(params.maxBitrateKbps));
-  const startupBitrate = Math.max(OFFICIAL_MIN_BITRATE_KBPS, Math.round(maxBitrate / 4));
+  const qualityProfile = resolveNvstQualityProfile(params);
+  const maxBitrate = qualityProfile.maxBitrateKbps;
+  const startupBitrate = qualityProfile.startupBitrateKbps;
   const isHighFps = params.fps >= 90;
   const is90Fps = params.fps === 90;
   const is120Fps = params.fps === 120;
@@ -72,12 +120,12 @@ export function buildNvstSdp(params: NvstParams): string {
     "a=msid:fbc-video-0",
     // Match the stable Android-native recovery profile. Large FEC/NACK bursts
     // amplify congestion after packet loss instead of letting BWE recover.
-    "a=vqos.fec.rateDropWindow:10",
+    `a=vqos.fec.rateDropWindow:${qualityProfile.fecRateDropWindow}`,
     "a=vqos.fec.minRequiredFecPackets:2",
     "a=vqos.drc.minRequiredBitrateCheckEnabled:1",
-    "a=vqos.fec.repairMinPercent:5",
-    "a=vqos.fec.repairPercent:5",
-    "a=vqos.fec.repairMaxPercent:35",
+    `a=vqos.fec.repairMinPercent:${qualityProfile.fecRepairMinPercent}`,
+    `a=vqos.fec.repairPercent:${qualityProfile.fecRepairPercent}`,
+    `a=vqos.fec.repairMaxPercent:${qualityProfile.fecRepairMaxPercent}`,
     // Official web client defaults to dynamicStreamingMode=3 (full dynamic
     // streaming: DRC + DFC + bitrate envelope). The fork previously locked 0
     // to prevent mid-session SSRC switches, but the renderer now handles track
@@ -245,9 +293,11 @@ export function buildNvstSdp(params: NvstParams): string {
     // fork forced maxFPS:120 — reverted as part of full alignment with the
     // official bundle dump; revert this line again if GFN ignores low FPS).
     `a=video.maxFPS:${params.fps}`,
-    // Bitrate attributes mirror the official GFN web client exactly (verified
+    // The normal profile mirrors the official GFN web client exactly (verified
     // against a dump of play.geforcenow.com's vendor bundle): initial =
-    // initialPeak = max(4000, max/4), minimum fixed at 4000. The official
+    // initialPeak = max(4000, max/4), minimum fixed at 4000. The optional
+    // resilient profile intentionally reserves headroom and starts at 4 Mbps.
+    // The official
     // client does NOT send enableBandwidthEstimation / disableBitrateLimit /
     // peakBitrateKbps / serverPeakBitrateKbps / grc.maximumBitrateKbps — those
     // fork additions made the server enable its own throttling BWE, which read
