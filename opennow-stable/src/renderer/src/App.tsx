@@ -49,6 +49,7 @@ import { useQueueAdRuntime } from "./hooks/useQueueAdRuntime";
 import { usePlaytime } from "./utils/usePlaytime";
 import { createStreamDiagnosticsStore, useStreamDiagnosticsSelector } from "./utils/streamDiagnosticsStore";
 import { StreamSessionReportAccumulator } from "./utils/sessionReport";
+import { streamDiagnosticsRecorder } from "./utils/diagnosticsRecorder";
 import { nextStatsOverlayMode } from "./utils/streamStatsHud";
 import { isShortcutCaptureTarget } from "./utils/shortcutCaptureFocus";
 import type { StreamStatus } from "./lib/appTypes";
@@ -273,6 +274,30 @@ export function App(): JSX.Element {
   useEffect(() => {
     streamingGameRef.current = streamingGame;
   }, [streamingGame]);
+
+  useEffect(() => {
+    const record = (): void => streamDiagnosticsRecorder.record(diagnosticsStore.getSnapshot());
+    record();
+    return diagnosticsStore.subscribe(record);
+  }, [diagnosticsStore]);
+
+  useEffect(() => {
+    streamDiagnosticsRecorder.setContext({
+      gameTitle: streamingGame?.title,
+      requestedResolution: settings.resolution,
+      requestedCodec: settings.codec,
+      targetFps: settings.fps,
+      requestedMaxBitrateMbps: settings.maxBitrateMbps,
+      resilientNetworkProfile: settings.autoRecoveryBitrate,
+    });
+  }, [
+    settings.autoRecoveryBitrate,
+    settings.codec,
+    settings.fps,
+    settings.maxBitrateMbps,
+    settings.resolution,
+    streamingGame?.title,
+  ]);
 
   showSessionReportRef.current = settings.showSessionReport;
   directLaunchConsoleModeRef.current = directLaunchConsoleMode;
