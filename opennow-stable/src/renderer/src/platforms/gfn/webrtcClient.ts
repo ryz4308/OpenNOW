@@ -45,6 +45,7 @@ import {
   rewriteH265TierFlag,
   rewriteSdpIceCandidateEndpoints,
 } from "./sdp";
+import { resolveNvstQualityProfile } from "./sdp/nvstOffer";
 import { MicrophoneManager, type MicState, type MicStateChange } from "./microphoneManager";
 import type {
   StreamDiagnostics,
@@ -65,9 +66,6 @@ import { deriveStreamSessionDiagnostics } from "./webrtc/sessionDiagnostics";
 import {
   DecoderPressureController,
 } from "./webrtc/decoderPressureController";
-import {
-  NetworkRecoveryController,
-} from "./webrtc/networkRecoveryController";
 import {
   InputChannelPolicyController,
   type RiInputCapabilities,
@@ -177,7 +175,7 @@ interface ClientOptions {
   mouseAcceleration?: number;
   /** WebRTC mouse-movement coalescing interval override. */
   mouseFlushIntervalMs?: MouseFlushIntervalPreference;
-  /** WebRTC-only bitrate recovery mode for lossy network conditions. */
+  /** WebRTC-only SDP profile negotiated before the stream starts. */
   autoRecoveryBitrate?: boolean;
   /** Selected GFN keyboard layout for remote physical OEM key mapping. */
   keyboardLayout?: KeyboardLayout;
@@ -368,7 +366,7 @@ export class GfnWebRtcClient {
   private inputQueueDropCount = 0;
 
   private readonly decoderPressureController: DecoderPressureController;
-  private readonly networkRecoveryController: NetworkRecoveryController;
+  private resilientProfileTargetBitrateKbps = 0;
   private readonly inputChannelPolicyController: InputChannelPolicyController;
   private readonly gamepadController: GamepadController;
   private readonly domInputController: DomInputCaptureController;
@@ -415,9 +413,19 @@ export class GfnWebRtcClient {
     rttMs: 0,
     transportType: "unknown",
     localCandidateType: "",
+    remoteCandidateType: "",
+    iceConnectionState: "closed",
+    signalingState: "closed",
+    dataChannels: [],
     framesReceived: 0,
     framesDecoded: 0,
     framesDropped: 0,
+    keyFramesDecoded: 0,
+    nackCount: 0,
+    pliCount: 0,
+    firCount: 0,
+    freezeCount: 0,
+    totalFreezesDurationMs: 0,
     decodeTimeMs: 0,
     renderTimeMs: 0,
     jitterBufferDelayMs: 0,
@@ -475,18 +483,6 @@ export class GfnWebRtcClient {
         this.diagnostics.decoderRecoveryAction = state.recoveryAction;
       },
     });
-    this.networkRecoveryController = new NetworkRecoveryController({
-      log: (message) => this.log(message),
-      setMaxBitrateKbps: (kbps) => this.setMaxBitrateKbps(kbps),
-      onStateChange: (state) => {
-        this.diagnostics.networkRecoveryEnabled = state.enabled;
-        this.diagnostics.networkRecoveryActive = state.active;
-        this.diagnostics.networkRecoveryAttempts = state.recoveryAttempts;
-        this.diagnostics.networkRecoveryAction = state.recoveryAction;
-        this.diagnostics.networkRecoveryTargetBitrateKbps = state.targetBitrateKbps;
-      },
-    });
-    this.networkRecoveryController.setEnabled(Boolean(options.autoRecoveryBitrate));
     this.inputChannelPolicyController = new InputChannelPolicyController(
       this.riInputCapabilities,
       {
@@ -846,7 +842,7 @@ export class GfnWebRtcClient {
     this.videoDecodeStallWarningSent = false;
     this.statsChannelVersionLogged = false;
     this.decoderPressureController.reset();
-    this.networkRecoveryController.reset();
+    this.resilientProfileTargetBitrateKbps = 0;
     const mouseDiagnostics = this.domInputController.getMouseDiagnostics();
     this.diagnostics = {
       connectionState: this.pc?.connectionState ?? "closed",
@@ -873,9 +869,19 @@ export class GfnWebRtcClient {
       rttMs: 0,
       transportType: "unknown",
       localCandidateType: "",
+      remoteCandidateType: "",
+      iceConnectionState: this.pc?.iceConnectionState ?? "closed",
+      signalingState: this.pc?.signalingState ?? "closed",
+      dataChannels: [],
       framesReceived: 0,
       framesDecoded: 0,
       framesDropped: 0,
+      keyFramesDecoded: 0,
+      nackCount: 0,
+      pliCount: 0,
+      firCount: 0,
+      freezeCount: 0,
+      totalFreezesDurationMs: 0,
       decodeTimeMs: 0,
       renderTimeMs: 0,
       jitterBufferDelayMs: 0,
@@ -903,9 +909,9 @@ export class GfnWebRtcClient {
       decoderRecoveryAttempts: 0,
       decoderRecoveryAction: "none",
       networkRecoveryEnabled: this.options.autoRecoveryBitrate === true,
-      networkRecoveryActive: false,
+      networkRecoveryActive: this.options.autoRecoveryBitrate === true,
       networkRecoveryAttempts: 0,
-      networkRecoveryAction: "none",
+      networkRecoveryAction: this.options.autoRecoveryBitrate === true ? "pending next WebRTC offer" : "none",
       networkRecoveryTargetBitrateKbps: 0,
       nativeRequestedFps: undefined,
       nativeCapsFramerate: undefined,
@@ -944,7 +950,11 @@ export class GfnWebRtcClient {
     this.currentResolution = settings.resolution;
     this.isHdr = settings.colorQuality.startsWith("10bit");
     this.decoderPressureController.initializeBitrate(settings.maxBitrateKbps);
-    this.networkRecoveryController.initializeBitrate(settings.maxBitrateKbps);
+    const resilientProfile = resolveNvstQualityProfile({
+      maxBitrateKbps: settings.maxBitrateKbps,
+      resilientNetworkProfile: this.options.autoRecoveryBitrate === true && !nativeRendererActive,
+    });
+    this.resilientProfileTargetBitrateKbps = resilientProfile.maxBitrateKbps;
 
     this.diagnostics.resolution = settings.resolution;
     this.diagnostics.codec = codec;
@@ -956,9 +966,15 @@ export class GfnWebRtcClient {
     this.diagnostics.isHdr = this.isHdr;
     this.diagnostics.targetBitrateKbps = Math.min(
       this.decoderPressureController.targetBitrateKbps,
-      this.networkRecoveryController.targetBitrateKbps,
+      resilientProfile.maxBitrateKbps,
     );
-    this.diagnostics.networkRecoveryTargetBitrateKbps = this.networkRecoveryController.targetBitrateKbps;
+    this.diagnostics.networkRecoveryEnabled = this.options.autoRecoveryBitrate === true && !nativeRendererActive;
+    this.diagnostics.networkRecoveryActive = this.diagnostics.networkRecoveryEnabled;
+    this.diagnostics.networkRecoveryAttempts = 0;
+    this.diagnostics.networkRecoveryAction = this.diagnostics.networkRecoveryEnabled
+      ? "SDP profile applied"
+      : "none";
+    this.diagnostics.networkRecoveryTargetBitrateKbps = resilientProfile.maxBitrateKbps;
     this.diagnostics.decodeFps = nativeRendererActive ? settings.fps : 0;
     this.diagnostics.receiveFps = 0;
     this.diagnostics.renderFps = nativeRendererActive ? settings.fps : 0;
@@ -1074,6 +1090,13 @@ export class GfnWebRtcClient {
     activePair = iceTransport.activePair;
     this.diagnostics.transportType = iceTransport.transportType;
     this.diagnostics.localCandidateType = iceTransport.localCandidateType;
+    this.diagnostics.remoteCandidateType = iceTransport.remoteCandidateType;
+    this.diagnostics.iceConnectionState = this.pc.iceConnectionState;
+    this.diagnostics.signalingState = this.pc.signalingState;
+    this.diagnostics.dataChannels = [...new Set(statsEntries
+      .filter((stats) => stats.type === "data-channel" && typeof stats.label === "string")
+      .map((stats) => String(stats.label))
+      .filter(Boolean))].sort();
 
     // Process video track stats
     if (inboundVideo) {
@@ -1138,6 +1161,14 @@ export class GfnWebRtcClient {
       this.diagnostics.framesReceived = framesReceived;
       this.diagnostics.framesDecoded = framesDecoded;
       this.diagnostics.framesDropped = framesDropped;
+      this.diagnostics.keyFramesDecoded = Number(inboundVideo.keyFramesDecoded ?? 0);
+      this.diagnostics.nackCount = Number(inboundVideo.nackCount ?? 0);
+      this.diagnostics.pliCount = Number(inboundVideo.pliCount ?? 0);
+      this.diagnostics.firCount = Number(inboundVideo.firCount ?? 0);
+      this.diagnostics.freezeCount = Number(inboundVideo.freezeCount ?? 0);
+      this.diagnostics.totalFreezesDurationMs = Math.round(
+        Number(inboundVideo.totalFreezesDuration ?? 0) * 1000,
+      );
 
       if (
         !this.videoDecodeStallWarningSent &&
@@ -1229,17 +1260,9 @@ export class GfnWebRtcClient {
       this.diagnostics.rttMs = Math.round(rtt * 1000 * 10) / 10;
     }
 
-    await this.networkRecoveryController.recover({
-      packetLossPercent: this.diagnostics.packetLossPercent,
-      rttMs: this.diagnostics.rttMs,
-      jitterMs: this.diagnostics.jitterMs,
-      receiveFps: this.diagnostics.receiveFps,
-      decodeFps: this.diagnostics.decodeFps,
-    });
-
     const effectiveTargetBitrateKbps = Math.min(
       this.decoderPressureController.targetBitrateKbps,
-      this.networkRecoveryController.targetBitrateKbps,
+      this.resilientProfileTargetBitrateKbps || this.decoderPressureController.targetBitrateKbps,
     );
     const bitrateDiagnostics = computeBitrateDiagnostics(
       effectiveTargetBitrateKbps,
@@ -1247,7 +1270,8 @@ export class GfnWebRtcClient {
     );
     this.diagnostics.targetBitrateKbps = bitrateDiagnostics.targetBitrateKbps;
     this.diagnostics.availableBitrateKbps = bitrateDiagnostics.availableBitrateKbps;
-    this.diagnostics.networkRecoveryTargetBitrateKbps = this.networkRecoveryController.targetBitrateKbps;
+    this.diagnostics.networkRecoveryTargetBitrateKbps =
+      this.resilientProfileTargetBitrateKbps || this.decoderPressureController.targetBitrateKbps;
 
     const reliableBufferedAmount = this.reliableInputChannel?.bufferedAmount ?? 0;
     const partiallyReliableBufferedAmount = this.partiallyReliableInputChannel?.bufferedAmount ?? 0;
@@ -2059,7 +2083,6 @@ export class GfnWebRtcClient {
     const negotiatedPartialReliable = this.riInputCapabilities.partialReliableThresholdMs;
     this.partialReliableThresholdMs = negotiatedPartialReliable ?? GfnWebRtcClient.DEFAULT_PARTIAL_RELIABLE_THRESHOLD_MS;
     this.decoderPressureController.initializeBitrate(settings.maxBitrateKbps);
-    this.networkRecoveryController.initializeBitrate(settings.maxBitrateKbps);
     this.log(
       `Input channel policy: partial reliable threshold=${this.partialReliableThresholdMs}ms${negotiatedPartialReliable === null ? " (fallback)" : ""}, hidMask=0x${this.riInputCapabilities.hidDeviceMask.toString(16)}, prGamepadMask=0x${this.riInputCapabilities.enablePartiallyReliableTransferGamepad.toString(16)}, prHidMask=0x${this.riInputCapabilities.enablePartiallyReliableTransferHid.toString(16)}`,
     );
@@ -2321,9 +2344,14 @@ export class GfnWebRtcClient {
     this.diagnostics.codec = effectiveCodec;
     this.emitStats();
 
+    const qualityProfile = resolveNvstQualityProfile({
+      maxBitrateKbps: settings.maxBitrateKbps,
+      resilientNetworkProfile: this.options.autoRecoveryBitrate === true,
+    });
+
     if (answer.sdp) {
-      answer.sdp = mungeAnswerSdp(answer.sdp, settings.maxBitrateKbps);
-      this.log(`Answer SDP munged (b=AS:${settings.maxBitrateKbps}, stereo=1)`);
+      answer.sdp = mungeAnswerSdp(answer.sdp, qualityProfile.maxBitrateKbps);
+      this.log(`Answer SDP munged (b=AS:${qualityProfile.maxBitrateKbps}, stereo=1)`);
     }
 
     await pc.setLocalDescription(answer);
@@ -2364,7 +2392,14 @@ export class GfnWebRtcClient {
       credentials,
       dynamicSplitEncodeUpdatesEnabled:
         settings.nativeTransitionDiagnostics?.disableDynamicSplitEncodeUpdates !== true,
+      resilientNetworkProfile: this.options.autoRecoveryBitrate === true,
     });
+
+    if (this.options.autoRecoveryBitrate === true) {
+      this.log(
+        `Resilient SDP profile: requestedMax=${settings.maxBitrateKbps}kbps, negotiatedMax=${qualityProfile.maxBitrateKbps}kbps, startup=${qualityProfile.startupBitrateKbps}kbps, FEC=${qualityProfile.fecRepairMinPercent}/${qualityProfile.fecRepairPercent}/${qualityProfile.fecRepairMaxPercent}%`,
+      );
+    }
 
     await window.openNow.sendAnswer({
       sdp: finalSdp,
