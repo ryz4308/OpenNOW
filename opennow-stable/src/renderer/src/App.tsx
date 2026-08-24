@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 30084)
-Total output lines: 3208
-
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, JSX } from "react";
 import { AnimatePresence, m, useReducedMotion } from "motion/react";
@@ -1614,7 +1611,21 @@ export function App(): JSX.Element {
       ) {
         return false;
       }
-      if (signalingRecoveryRef.current.explicitShutdown)…84 tokens truncated…session:", {
+      if (signalingRecoveryRef.current.explicitShutdown) {
+        return false;
+      }
+      return true;
+    };
+
+    if (
+      expectedRecoveryGeneration !== undefined
+      && !isRecoveryGenerationCurrent(expectedRecoveryGeneration)
+    ) {
+      console.log("[Recovery] Skipping claimed session apply due to stale recovery generation");
+      return;
+    }
+
+    console.log("Claimed session:", {
       sessionId: claimed.sessionId,
       signalingServer: claimed.signalingServer,
       signalingUrl: claimed.signalingUrl,
@@ -3091,7 +3102,6 @@ export function App(): JSX.Element {
               platformStore={streamingStore ?? undefined}
               status={loadingStatus}
               queuePosition={queuePosition}
-              queueEstimateKey={session?.zone ?? "default"}
               adState={effectiveAdState}
               activeAd={activeQueueAd}
               activeAdMediaUrl={activeQueueAdMediaUrl}

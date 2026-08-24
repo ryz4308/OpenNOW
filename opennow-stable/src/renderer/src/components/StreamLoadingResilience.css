@@ -1,0 +1,10 @@
+.sload-facts.sload-facts--with-eta {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  width: min(760px, 100%);
+}
+
+@media (max-width: 620px) {
+  .sload-facts.sload-facts--with-eta {
+    grid-template-columns: 1fr;
+  }
+}

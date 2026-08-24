@@ -20,6 +20,7 @@ import {
   formatQueueWaitEstimate,
   type QueuePositionObservation,
 } from "../utils/queueWaitEstimator";
+import "./StreamLoadingResilience.css";
 
 type TranslateFunction = typeof import("../i18n").t;
 
@@ -320,7 +321,7 @@ export function StreamLoading({
         </div>
 
         {!hasError && (
-          <div className="sload-facts">
+          <div className="sload-facts sload-facts--with-eta">
             <div className="sload-fact">
               <p>{t("streamLoading.telemetry.queuePosition")}</p>
               <strong>{status === "queue" && queuePosition ? `#${queuePosition}` : status === "queue" ? t("streamLoading.telemetry.calculating") : t("streamLoading.telemetry.cleared")}</strong>
