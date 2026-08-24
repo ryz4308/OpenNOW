@@ -3102,6 +3102,7 @@ export function App(): JSX.Element {
               platformStore={streamingStore ?? undefined}
               status={loadingStatus}
               queuePosition={queuePosition}
+              queueEstimateKey={session?.zone ?? "default"}
               adState={effectiveAdState}
               activeAd={activeQueueAd}
               activeAdMediaUrl={activeQueueAdMediaUrl}
