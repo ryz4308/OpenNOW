@@ -52,6 +52,20 @@ test("records network and renderer incidents without exposing the raw session id
     cursorSourceHeight: 720,
     cursorDevicePixelRatio: 1,
     cursorPointerLocked: true,
+    pointerLockLossCount: 1,
+    pointerRelockAttemptCount: 1,
+    pointerLockLastChangeReason: "tracked-escape",
+    pointerEscapeFallbackActive: true,
+    absolutePointerMappingRevision: 1,
+    absolutePointerGuardEnabled: true,
+    absolutePointerLocalWidth: 1280,
+    absolutePointerLocalHeight: 720,
+    absolutePointerLogicalWidth: 1920,
+    absolutePointerLogicalHeight: 1080,
+    videoPlaybackTotalFrames: 100,
+    videoPlaybackDroppedFrames: 12,
+    statsPollIntervalMs: 2_200,
+    statsCollectionDurationMs: 280,
   }, startedAt + 1_100);
   recorder.record({
     ...defaultDiagnostics(),
@@ -94,7 +108,11 @@ test("records network and renderer incidents without exposing the raw session id
   assert.equal(events.some((event) => event.type === "NACK_INCREASED"), true);
   assert.equal(events.some((event) => event.type === "PLI_INCREASED"), true);
   assert.equal(events.some((event) => event.type === "CURSOR_VIEWPORT_RESYNC"), true);
-  assert.equal(report.schemaVersion, 4);
+  assert.equal(events.some((event) => event.type === "POINTER_LOCK_CHANGED"), true);
+  assert.equal(events.some((event) => event.type === "ABSOLUTE_POINTER_MAPPING_CHANGED"), true);
+  assert.equal(events.some((event) => event.type === "VIDEO_PRESENTATION_DROP_SPIKE"), true);
+  assert.equal(events.some((event) => event.type === "STATS_POLL_STALL"), true);
+  assert.equal(report.schemaVersion, 6);
 
   const summary = report.summary as {
     sampleCount: number;

@@ -107,6 +107,13 @@ test("keeps experimental network recovery disabled by default", () => {
   assert.equal(createDefaultSettings("win32").autoRecoveryBitrate, false);
 });
 
+test("enables the resilience diagnostics experiment defaults", () => {
+  const settings = createDefaultSettings("win32");
+  assert.equal(settings.absolutePointerCoordinateGuard, true);
+  assert.equal(settings.compositorSafeMode, true);
+  assert.equal(settings.smoothPlaybackBuffer, true);
+});
+
 test("normalizes recording settings to supported performance bounds", () => {
   assert.equal(normalizeRecordingResolution("1080p"), "1080p");
   assert.equal(normalizeRecordingResolution("2160p"), "720p");

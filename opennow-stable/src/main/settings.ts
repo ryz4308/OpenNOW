@@ -322,6 +322,18 @@ export class SettingsManager {
       settings.autoRecoveryBitrate = false;
       migrated = true;
     }
+    if (typeof settings.absolutePointerCoordinateGuard !== "boolean") {
+      settings.absolutePointerCoordinateGuard = true;
+      migrated = true;
+    }
+    if (typeof settings.compositorSafeMode !== "boolean") {
+      settings.compositorSafeMode = true;
+      migrated = true;
+    }
+    if (typeof settings.smoothPlaybackBuffer !== "boolean") {
+      settings.smoothPlaybackBuffer = true;
+      migrated = true;
+    }
 
     if (typeof settings.steamControllerCompatibilityMode !== "boolean") {
       settings.steamControllerCompatibilityMode = false;

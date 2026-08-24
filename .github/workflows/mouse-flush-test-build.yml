@@ -1,19 +1,20 @@
-name: Resilience v2 test build
+name: Resilience v3 test build
 
-# Custom diagnostic build: Fast Burst Recovery, Cursor Viewport Guard,
-# calibrated queue ETA, and diagnostics export v4.
+# Custom diagnostic build: Fast Burst Recovery, absolute pointer guard,
+# compositor-safe presentation, smooth playout buffering, queue ETA,
+# and diagnostics export v6.
 
 on:
   workflow_dispatch:
   push:
     branches:
-      - mouse-flush-test
+      - opennow-resilience-v3
 
 permissions:
   contents: read
 
 concurrency:
-  group: mouse-flush-test-${{ github.ref }}
+  group: resilience-v3-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -69,12 +70,12 @@ jobs:
         run: |
           $source = Get-ChildItem dist-release\*-portable-x64.exe | Select-Object -First 1
           if (-not $source) { throw "Portable executable was not produced." }
-          Copy-Item $source.FullName dist-release\OpenNOW-resilience-v2-portable-x64.exe
+          Copy-Item $source.FullName dist-release\OpenNOW-resilience-v3-portable-x64.exe
 
       - name: Upload portable executable
         uses: actions/upload-artifact@v4
         with:
-          name: OpenNOW-resilience-v2-windows-x64
-          path: opennow-stable/dist-release/OpenNOW-resilience-v2-portable-x64.exe
+          name: OpenNOW-resilience-v3-windows-x64
+          path: opennow-stable/dist-release/OpenNOW-resilience-v3-portable-x64.exe
           if-no-files-found: error
           retention-days: 14

@@ -66,6 +66,7 @@ class FakeEventTarget {
 function installMouseHarness(options: {
   mouseSensitivity: number;
   resolution: string;
+  logicalResolution?: string;
   mouseFlushIntervalPreference?: MouseFlushIntervalPreference;
 }): {
   controller: DomInputCaptureController;
@@ -133,6 +134,7 @@ function installMouseHarness(options: {
       isNativeElectronInputBridge: () => false,
       shouldAutoFullscreen: () => false,
       getCurrentResolution: () => options.resolution,
+      getLogicalPointerResolution: () => options.logicalResolution ?? options.resolution,
       getKeyboardLayout: () => undefined,
       getMicState: () => "disabled",
       setWindowInputPaused: () => {},
@@ -152,6 +154,7 @@ function installMouseHarness(options: {
       mouseAccelerationPercent: 1,
       mouseFlushIntervalPreference: options.mouseFlushIntervalPreference ?? "auto",
       nativeCursorOverlay: false,
+      absolutePointerCoordinateGuard: true,
     },
   );
   controller.install(videoElement as unknown as HTMLVideoElement);
@@ -267,7 +270,11 @@ test("scaled-to-zero residual parks without synchronous recursion and resumes on
 });
 
 test("Escape pointer-lock loss keeps the first in-game click immediately usable", () => {
-  const harness = installMouseHarness({ mouseSensitivity: 1, resolution: "1920x1080" });
+  const harness = installMouseHarness({
+    mouseSensitivity: 1,
+    resolution: "960x540",
+    logicalResolution: "1920x1080",
+  });
   try {
     harness.setPointerLocked(false);
     harness.dispatchMouseDown(2, 3, 10);
@@ -275,6 +282,16 @@ test("Escape pointer-lock loss keeps the first in-game click immediately usable"
     assert.equal(harness.reliablePayloads.length, 1, "absolute cursor pin precedes the click");
     assert.equal(harness.reliableSinglePayloads.length, 1, "the click is forwarded without recapture");
     assert.deepEqual(harness.sentInputTypes, [], "the cursor pin stays ordered on the reliable channel");
+    const absolute = new DataView(
+      harness.reliablePayloads[0]!.buffer,
+      harness.reliablePayloads[0]!.byteOffset,
+      harness.reliablePayloads[0]!.byteLength,
+    );
+    assert.equal(absolute.getUint16(4, false), 960);
+    assert.equal(absolute.getUint16(6, false), 810);
+    assert.equal(absolute.getUint16(10, false), 1920);
+    assert.equal(absolute.getUint16(12, false), 1080);
+    assert.equal(harness.controller.getMouseDiagnostics().absoluteMappingActive, true);
   } finally {
     harness.restoreGlobals();
   }

@@ -289,13 +289,19 @@ export function App(): JSX.Element {
       targetFps: settings.fps,
       requestedMaxBitrateMbps: settings.maxBitrateMbps,
       resilientNetworkProfile: settings.autoRecoveryBitrate,
+      absolutePointerCoordinateGuard: settings.absolutePointerCoordinateGuard,
+      compositorSafeMode: settings.compositorSafeMode,
+      smoothPlaybackBuffer: settings.smoothPlaybackBuffer,
     });
   }, [
     settings.autoRecoveryBitrate,
+    settings.absolutePointerCoordinateGuard,
     settings.codec,
+    settings.compositorSafeMode,
     settings.fps,
     settings.maxBitrateMbps,
     settings.resolution,
+    settings.smoothPlaybackBuffer,
     streamingGame?.title,
   ]);
 
@@ -2895,10 +2901,10 @@ export function App(): JSX.Element {
           <m.div
             key={mainPage}
             className="page-transition-surface"
-            initial={{ opacity: 0 }}
+            initial={settings.compositorSafeMode ? false : { opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            transition={pageTransition}
+            transition={settings.compositorSafeMode ? { duration: 0 } : pageTransition}
           >
             {mainPage === "home" && (
               <HomePage
@@ -2989,6 +2995,7 @@ export function App(): JSX.Element {
               nativeInputCaptureActive={nativeInputCaptureActive}
               gstreamerEnabled={settings.streamClientMode === "native"}
               nativeExternalRenderer={settings.nativeExternalRenderer}
+              compositorSafeMode={settings.compositorSafeMode}
               shortcuts={{
                 toggleStats: formatShortcutForDisplay(settings.shortcutToggleStats, isMac),
                 togglePointerLock: formatShortcutForDisplay(settings.shortcutTogglePointerLock, isMac),

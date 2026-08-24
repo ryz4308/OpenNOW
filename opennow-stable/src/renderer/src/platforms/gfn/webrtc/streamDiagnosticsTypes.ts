@@ -44,6 +44,11 @@ export interface StreamDiagnostics {
   nackCount: number;
   pliCount: number;
   firCount: number;
+  retransmittedPacketsReceived: number;
+  retransmittedBytesReceived: number;
+  fecPacketsReceived: number;
+  fecPacketsDiscarded: number;
+  packetsDiscarded: number;
   freezeCount: number;
   totalFreezesDurationMs: number;
 
@@ -51,6 +56,28 @@ export interface StreamDiagnostics {
   decodeTimeMs: number;
   renderTimeMs: number;
   jitterBufferDelayMs: number;
+  jitterBufferCurrentDelayMs: number;
+  jitterBufferMinimumDelayMs: number;
+  jitterBufferTargetDelayMs: number;
+  jitterBufferEmittedCount: number;
+  videoElementWidth: number;
+  videoElementHeight: number;
+  videoReadyState: number;
+  videoPaused: boolean;
+  videoPlaybackTotalFrames: number;
+  videoPlaybackDroppedFrames: number;
+  videoPlaybackCorruptedFrames: number;
+  documentVisibilityState: string;
+  documentHasFocus: boolean;
+  documentFullscreenActive: boolean;
+  streamSidebarOpen: boolean;
+  statsPollIntervalMs: number;
+  statsCollectionDurationMs: number;
+  averageProcessingDelayMs: number;
+  averageAssemblyTimeMs: number;
+  framesAssembledFromMultiplePackets: number;
+  decoderImplementation: string;
+  powerEfficientDecoder: boolean;
 
   // Input channel pressure
   inputQueueBufferedBytes: number;
@@ -76,6 +103,22 @@ export interface StreamDiagnostics {
   cursorDevicePixelRatio: number;
   cursorViewportResyncCount: number;
   cursorViewportLastResyncReason: string;
+  absolutePointerGuardEnabled: boolean;
+  pointerLockLossCount: number;
+  pointerRelockAttemptCount: number;
+  pointerRelockSuccessCount: number;
+  pointerRelockFailureCount: number;
+  pointerLockLastChangeReason: string;
+  pointerEscapeFallbackActive: boolean;
+  absolutePointerMappingCount: number;
+  absolutePointerMappingRevision: number;
+  absolutePointerMappingActive: boolean;
+  absolutePointerLocalWidth: number;
+  absolutePointerLocalHeight: number;
+  absolutePointerLogicalWidth: number;
+  absolutePointerLogicalHeight: number;
+  absolutePointerLastX: number;
+  absolutePointerLastY: number;
 
   lagReason: StreamLagReason;
   lagReasonDetail: string;
@@ -97,6 +140,13 @@ export interface StreamDiagnostics {
   networkRecoveryAttempts: number;
   networkRecoveryAction: string;
   networkRecoveryTargetBitrateKbps: number;
+  compositorSafeModeEnabled: boolean;
+  smoothPlaybackBufferEnabled: boolean;
+  smoothPlaybackVideoTargetMs: number;
+  smoothPlaybackAudioTargetMs: number;
+  smoothPlaybackAppliedCount: number;
+  smoothPlaybackJitterBufferTargetSupported: boolean;
+  smoothPlaybackPlayoutDelayHintSupported: boolean;
   nativeRequestedFps?: number;
   nativeCapsFramerate?: string;
   nativeQueueMode?: NativeQueueMode;

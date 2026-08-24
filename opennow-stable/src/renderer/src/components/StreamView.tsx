@@ -51,6 +51,7 @@ interface StreamViewProps {
   nativeInputCaptureActive?: boolean;
   gstreamerEnabled: boolean;
   nativeExternalRenderer?: boolean;
+  compositorSafeMode?: boolean;
   shortcuts: {
     toggleStats: string;
     togglePointerLock: string;
@@ -132,6 +133,7 @@ export function StreamView({
   nativeInputCaptureActive = false,
   gstreamerEnabled,
   nativeExternalRenderer = false,
+  compositorSafeMode = false,
   shortcuts,
   serverRegion,
   antiAfkEnabled,
@@ -436,16 +438,21 @@ export function StreamView({
   useEffect(() => {
     const video = localVideoRef.current;
     if (!video) return;
-    const effective = gstreamerEnabled || nativeRendererActive
+    const effective = gstreamerEnabled || nativeRendererActive || compositorSafeMode
       ? { ...videoShader, enabled: false }
       : videoShader;
+    if (compositorSafeMode) {
+      shaderPipelineRef.current?.dispose();
+      shaderPipelineRef.current = null;
+      return;
+    }
     if (!shaderPipelineRef.current) {
       if (!effective.enabled) return;
       shaderPipelineRef.current = new VideoShaderPipeline(video, effective);
     } else {
       shaderPipelineRef.current.updateSettings(effective);
     }
-  }, [videoShader, gstreamerEnabled, nativeRendererActive]);
+  }, [videoShader, gstreamerEnabled, nativeRendererActive, compositorSafeMode]);
 
   useEffect(() => () => {
     shaderPipelineRef.current?.dispose();
@@ -678,7 +685,7 @@ export function StreamView({
     (nativeRendererActive || gstreamerEnabled) && !nativeExternalRenderer;
 
   return (
-    <div className={["sv", streamVideoReady ? "sv--video-ready" : "sv--video-pending", nativeInternalHole ? "sv--native-hole" : "", className].filter(Boolean).join(" ")}>
+    <div className={["sv", streamVideoReady ? "sv--video-ready" : "sv--video-pending", nativeInternalHole ? "sv--native-hole" : "", compositorSafeMode ? "sv--compositor-safe" : "", className].filter(Boolean).join(" ")}>
       {nativeInternalHole ? (
         <video
           ref={setVideoRef}
@@ -687,6 +694,20 @@ export function StreamView({
           muted
           tabIndex={-1}
           className="sv-video sv-video--native-hole"
+          onClick={() => {
+            if (localVideoRef.current && document.activeElement !== localVideoRef.current) {
+              localVideoRef.current.focus({ preventScroll: true });
+            }
+          }}
+        />
+      ) : compositorSafeMode ? (
+        <video
+          ref={setVideoRef}
+          autoPlay
+          playsInline
+          muted
+          tabIndex={-1}
+          className="sv-video"
           onClick={() => {
             if (localVideoRef.current && document.activeElement !== localVideoRef.current) {
               localVideoRef.current.focus({ preventScroll: true });

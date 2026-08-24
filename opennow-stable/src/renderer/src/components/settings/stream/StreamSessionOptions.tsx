@@ -74,6 +74,48 @@ export function StreamSessionOptions({
 
       <div className="settings-row settings-row--toggle">
         <div className="settings-row-top settings-row-top--compact">
+          <label className="settings-label settings-label--wrap" htmlFor="settings-stream-compositor-safe-mode">
+            <span className="settings-label-title">
+              {t("settings.video.compositorSafeMode")}
+              <span className="settings-inline-badge settings-inline-badge--beta">{t("app.labels.experimental")}</span>
+            </span>
+          </label>
+          <label className="settings-toggle">
+            <input
+              id="settings-stream-compositor-safe-mode"
+              type="checkbox"
+              checked={settings.compositorSafeMode}
+              onChange={(event) => handleChange("compositorSafeMode", event.target.checked)}
+            />
+            <span className="settings-toggle-track" />
+          </label>
+        </div>
+        <span className="settings-subtle-hint">{t("settings.video.compositorSafeModeHint")}</span>
+      </div>
+
+      <div className="settings-row settings-row--toggle">
+        <div className="settings-row-top settings-row-top--compact">
+          <label className="settings-label settings-label--wrap" htmlFor="settings-stream-smooth-playback-buffer">
+            <span className="settings-label-title">
+              {t("settings.video.smoothPlaybackBuffer")}
+              <span className="settings-inline-badge settings-inline-badge--beta">{t("app.labels.experimental")}</span>
+            </span>
+          </label>
+          <label className="settings-toggle">
+            <input
+              id="settings-stream-smooth-playback-buffer"
+              type="checkbox"
+              checked={settings.smoothPlaybackBuffer}
+              onChange={(event) => handleChange("smoothPlaybackBuffer", event.target.checked)}
+            />
+            <span className="settings-toggle-track" />
+          </label>
+        </div>
+        <span className="settings-subtle-hint">{t("settings.video.smoothPlaybackBufferHint")}</span>
+      </div>
+
+      <div className="settings-row settings-row--toggle">
+        <div className="settings-row-top settings-row-top--compact">
           <label
             className="settings-label settings-label--wrap"
             htmlFor="settings-stream-identify-steam-deck"

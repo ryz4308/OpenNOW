@@ -121,6 +121,36 @@ test("decoder recovery preserves bitrate state when no wire update is applied", 
   );
 });
 
+test("smooth playback buffer applies bounded receiver targets and reports support", () => {
+  const controller = new DecoderPressureController({
+    log: () => {},
+    getPeerConnection: () => null,
+    getControlChannel: () => null,
+    requestSignalingKeyframe: async () => {},
+    setMaxBitrateKbps: async () => false,
+    onStateChange: () => {},
+  });
+  const receiver = {
+    jitterBufferTarget: null,
+    playoutDelayHint: null,
+    track: { contentHint: "" },
+  } as unknown as RTCRtpReceiver;
+
+  controller.setSmoothPlaybackBufferEnabled(true);
+  controller.configureReceiver(receiver, "video");
+
+  assert.equal((receiver as unknown as { jitterBufferTarget: number }).jitterBufferTarget, 45);
+  assert.equal((receiver as unknown as { playoutDelayHint: number }).playoutDelayHint, 0.045);
+  assert.deepEqual(controller.getReceiverTuningDiagnostics(), {
+    smoothPlaybackBufferEnabled: true,
+    videoTargetMs: 45,
+    audioTargetMs: 48,
+    appliedCount: 1,
+    jitterBufferTargetSupported: true,
+    playoutDelayHintSupported: true,
+  });
+});
+
 test("network recovery classifies critical packet loss as a low bitrate target", () => {
   const decision = classifyNetworkRecoverySample({
     packetLossPercent: 12,

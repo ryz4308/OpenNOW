@@ -177,6 +177,12 @@ interface ClientOptions {
   mouseFlushIntervalMs?: MouseFlushIntervalPreference;
   /** WebRTC-only SDP profile negotiated before the stream starts. */
   autoRecoveryBitrate?: boolean;
+  /** Keep absolute pointer coordinates in the requested remote desktop space. */
+  absolutePointerCoordinateGuard?: boolean;
+  /** Reduce Chromium compositor effects around the stream video. */
+  compositorSafeMode?: boolean;
+  /** Request a small WebRTC receiver playout buffer. */
+  smoothPlaybackBuffer?: boolean;
   /** Selected GFN keyboard layout for remote physical OEM key mapping. */
   keyboardLayout?: KeyboardLayout;
   /** Enable official GFN clipboard custom-message paste support. */
@@ -340,6 +346,8 @@ export class GfnWebRtcClient {
     packetsReceived: number;
     packetsLost: number;
     totalDecodeTime: number;
+    jitterBufferDelay: number;
+    jitterBufferEmittedCount: number;
     atMs: number;
   } | null = null;
   private renderFpsCounter = { frames: 0, lastUpdate: 0, fps: 0 };
@@ -379,6 +387,7 @@ export class GfnWebRtcClient {
   // Stream info
   private currentCodec = "";
   private currentResolution = "";
+  private pointerLogicalResolution = "1920x1080";
   private isHdr = false;
   private videoDecodeStallWarningSent = false;
   private sessionId = "";
@@ -424,11 +433,38 @@ export class GfnWebRtcClient {
     nackCount: 0,
     pliCount: 0,
     firCount: 0,
+    retransmittedPacketsReceived: 0,
+    retransmittedBytesReceived: 0,
+    fecPacketsReceived: 0,
+    fecPacketsDiscarded: 0,
+    packetsDiscarded: 0,
     freezeCount: 0,
     totalFreezesDurationMs: 0,
     decodeTimeMs: 0,
     renderTimeMs: 0,
     jitterBufferDelayMs: 0,
+    jitterBufferCurrentDelayMs: 0,
+    jitterBufferMinimumDelayMs: 0,
+    jitterBufferTargetDelayMs: 0,
+    jitterBufferEmittedCount: 0,
+    videoElementWidth: 0,
+    videoElementHeight: 0,
+    videoReadyState: 0,
+    videoPaused: true,
+    videoPlaybackTotalFrames: 0,
+    videoPlaybackDroppedFrames: 0,
+    videoPlaybackCorruptedFrames: 0,
+    documentVisibilityState: "unknown",
+    documentHasFocus: false,
+    documentFullscreenActive: false,
+    streamSidebarOpen: false,
+    statsPollIntervalMs: 0,
+    statsCollectionDurationMs: 0,
+    averageProcessingDelayMs: 0,
+    averageAssemblyTimeMs: 0,
+    framesAssembledFromMultiplePackets: 0,
+    decoderImplementation: "",
+    powerEfficientDecoder: false,
     inputQueueBufferedBytes: 0,
     inputQueuePeakBufferedBytes: 0,
     partiallyReliableInputQueueBufferedBytes: 0,
@@ -452,6 +488,22 @@ export class GfnWebRtcClient {
     cursorDevicePixelRatio: 1,
     cursorViewportResyncCount: 0,
     cursorViewportLastResyncReason: "disabled",
+    absolutePointerGuardEnabled: false,
+    pointerLockLossCount: 0,
+    pointerRelockAttemptCount: 0,
+    pointerRelockSuccessCount: 0,
+    pointerRelockFailureCount: 0,
+    pointerLockLastChangeReason: "initial",
+    pointerEscapeFallbackActive: false,
+    absolutePointerMappingCount: 0,
+    absolutePointerMappingRevision: 0,
+    absolutePointerMappingActive: false,
+    absolutePointerLocalWidth: 0,
+    absolutePointerLocalHeight: 0,
+    absolutePointerLogicalWidth: 0,
+    absolutePointerLogicalHeight: 0,
+    absolutePointerLastX: 0,
+    absolutePointerLastY: 0,
     lagReason: "unknown",
     lagReasonDetail: "Waiting for stream stats",
     gpuType: "",
@@ -468,6 +520,13 @@ export class GfnWebRtcClient {
     networkRecoveryAttempts: 0,
     networkRecoveryAction: "none",
     networkRecoveryTargetBitrateKbps: 0,
+    compositorSafeModeEnabled: false,
+    smoothPlaybackBufferEnabled: false,
+    smoothPlaybackVideoTargetMs: 0,
+    smoothPlaybackAudioTargetMs: 0,
+    smoothPlaybackAppliedCount: 0,
+    smoothPlaybackJitterBufferTargetSupported: false,
+    smoothPlaybackPlayoutDelayHintSupported: false,
     nativeRequestedFps: undefined,
     nativeCapsFramerate: undefined,
     nativeQueueMode: undefined,
@@ -494,6 +553,9 @@ export class GfnWebRtcClient {
         this.diagnostics.decoderRecoveryAction = state.recoveryAction;
       },
     });
+    this.decoderPressureController.setSmoothPlaybackBufferEnabled(
+      options.smoothPlaybackBuffer === true,
+    );
     this.inputChannelPolicyController = new InputChannelPolicyController(
       this.riInputCapabilities,
       {
@@ -538,6 +600,7 @@ export class GfnWebRtcClient {
         isNativeElectronInputBridge: () => this.nativeElectronInputBridge,
         shouldAutoFullscreen: () => this.shouldAutoFullscreen(),
         getCurrentResolution: () => this.currentResolution,
+        getLogicalPointerResolution: () => this.pointerLogicalResolution,
         getKeyboardLayout: () => this.keyboardLayout,
         getMicState: () => this.micState,
         setWindowInputPaused: (paused) => {
@@ -555,6 +618,10 @@ export class GfnWebRtcClient {
         sendInputPacket: (payload, inputType) => this.sendInputPacket(payload, inputType),
         onGamepadConnected: this.gamepadController.onGamepadConnected,
         onGamepadDisconnected: this.gamepadController.onGamepadDisconnected,
+        onDiagnosticsChanged: () => {
+          this.syncInputAndReceiverDiagnostics();
+          this.emitStats();
+        },
         log: (message) => this.log(message),
       },
       {
@@ -565,6 +632,7 @@ export class GfnWebRtcClient {
         ),
         mouseFlushIntervalPreference: options.mouseFlushIntervalMs ?? "auto",
         nativeCursorOverlay: options.nativeCursorOverlay !== false,
+        absolutePointerCoordinateGuard: options.absolutePointerCoordinateGuard !== false,
       },
     );
     this.peerMediaController = new PeerMediaLifecycleController({
@@ -577,6 +645,7 @@ export class GfnWebRtcClient {
     this.autoFullScreenEnabled = options.autoFullScreen !== false;
     this.clipboardPasteEnabled = Boolean(options.clipboardPaste);
     this.clipboardMaxBytes = Math.max(0, Math.trunc(options.clipboardMaxBytes ?? DEFAULT_CLIPBOARD_MAX_BYTES));
+    this.syncInputAndReceiverDiagnostics();
 
     // Escape is intercepted by Electron before Chromium can leave fullscreen.
     // Keep this subscription alive for the whole stream-client lifetime: Windows
@@ -891,11 +960,38 @@ export class GfnWebRtcClient {
       nackCount: 0,
       pliCount: 0,
       firCount: 0,
+      retransmittedPacketsReceived: 0,
+      retransmittedBytesReceived: 0,
+      fecPacketsReceived: 0,
+      fecPacketsDiscarded: 0,
+      packetsDiscarded: 0,
       freezeCount: 0,
       totalFreezesDurationMs: 0,
       decodeTimeMs: 0,
       renderTimeMs: 0,
       jitterBufferDelayMs: 0,
+      jitterBufferCurrentDelayMs: 0,
+      jitterBufferMinimumDelayMs: 0,
+      jitterBufferTargetDelayMs: 0,
+      jitterBufferEmittedCount: 0,
+      videoElementWidth: 0,
+      videoElementHeight: 0,
+      videoReadyState: 0,
+      videoPaused: true,
+      videoPlaybackTotalFrames: 0,
+      videoPlaybackDroppedFrames: 0,
+      videoPlaybackCorruptedFrames: 0,
+      documentVisibilityState: "unknown",
+      documentHasFocus: false,
+      documentFullscreenActive: false,
+      streamSidebarOpen: false,
+      statsPollIntervalMs: 0,
+      statsCollectionDurationMs: 0,
+      averageProcessingDelayMs: 0,
+      averageAssemblyTimeMs: 0,
+      framesAssembledFromMultiplePackets: 0,
+      decoderImplementation: "",
+      powerEfficientDecoder: false,
       inputQueueBufferedBytes: 0,
       inputQueuePeakBufferedBytes: 0,
       partiallyReliableInputQueueBufferedBytes: 0,
@@ -919,6 +1015,22 @@ export class GfnWebRtcClient {
       cursorDevicePixelRatio: 1,
       cursorViewportResyncCount: 0,
       cursorViewportLastResyncReason: "disabled",
+      absolutePointerGuardEnabled: this.options.absolutePointerCoordinateGuard !== false,
+      pointerLockLossCount: 0,
+      pointerRelockAttemptCount: 0,
+      pointerRelockSuccessCount: 0,
+      pointerRelockFailureCount: 0,
+      pointerLockLastChangeReason: "initial",
+      pointerEscapeFallbackActive: false,
+      absolutePointerMappingCount: 0,
+      absolutePointerMappingRevision: 0,
+      absolutePointerMappingActive: false,
+      absolutePointerLocalWidth: 0,
+      absolutePointerLocalHeight: 0,
+      absolutePointerLogicalWidth: 0,
+      absolutePointerLogicalHeight: 0,
+      absolutePointerLastX: 0,
+      absolutePointerLastY: 0,
       lagReason: "unknown",
       lagReasonDetail: "Waiting for stream stats",
       gpuType: this.gpuType,
@@ -935,6 +1047,13 @@ export class GfnWebRtcClient {
       networkRecoveryAttempts: 0,
       networkRecoveryAction: this.options.autoRecoveryBitrate === true ? "pending next WebRTC offer" : "none",
       networkRecoveryTargetBitrateKbps: 0,
+      compositorSafeModeEnabled: this.options.compositorSafeMode === true,
+      smoothPlaybackBufferEnabled: this.options.smoothPlaybackBuffer === true,
+      smoothPlaybackVideoTargetMs: 0,
+      smoothPlaybackAudioTargetMs: 0,
+      smoothPlaybackAppliedCount: 0,
+      smoothPlaybackJitterBufferTargetSupported: false,
+      smoothPlaybackPlayoutDelayHintSupported: false,
       nativeRequestedFps: undefined,
       nativeCapsFramerate: undefined,
       nativeQueueMode: undefined,
@@ -963,6 +1082,56 @@ export class GfnWebRtcClient {
     this.emitStats();
   }
 
+  private syncInputAndReceiverDiagnostics(): void {
+    const mouse = this.domInputController.getMouseDiagnostics();
+    this.diagnostics.absolutePointerGuardEnabled = mouse.absoluteGuardEnabled;
+    this.diagnostics.cursorPointerLocked = mouse.pointerLocked;
+    this.diagnostics.pointerLockLossCount = mouse.pointerLockLossCount;
+    this.diagnostics.pointerRelockAttemptCount = mouse.pointerRelockAttemptCount;
+    this.diagnostics.pointerRelockSuccessCount = mouse.pointerRelockSuccessCount;
+    this.diagnostics.pointerRelockFailureCount = mouse.pointerRelockFailureCount;
+    this.diagnostics.pointerLockLastChangeReason = mouse.pointerLockLastChangeReason;
+    this.diagnostics.pointerEscapeFallbackActive = mouse.escapeFallbackActive;
+    this.diagnostics.absolutePointerMappingCount = mouse.absoluteMappingCount;
+    this.diagnostics.absolutePointerMappingRevision = mouse.absoluteMappingRevision;
+    this.diagnostics.absolutePointerMappingActive = mouse.absoluteMappingActive;
+    this.diagnostics.absolutePointerLocalWidth = mouse.absoluteLocalWidth;
+    this.diagnostics.absolutePointerLocalHeight = mouse.absoluteLocalHeight;
+    this.diagnostics.absolutePointerLogicalWidth = mouse.absoluteLogicalWidth;
+    this.diagnostics.absolutePointerLogicalHeight = mouse.absoluteLogicalHeight;
+    this.diagnostics.absolutePointerLastX = mouse.absoluteLastX;
+    this.diagnostics.absolutePointerLastY = mouse.absoluteLastY;
+
+    const receiver = this.decoderPressureController.getReceiverTuningDiagnostics();
+    this.diagnostics.compositorSafeModeEnabled = this.options.compositorSafeMode === true;
+    this.diagnostics.smoothPlaybackBufferEnabled = receiver.smoothPlaybackBufferEnabled;
+    this.diagnostics.smoothPlaybackVideoTargetMs = receiver.videoTargetMs;
+    this.diagnostics.smoothPlaybackAudioTargetMs = receiver.audioTargetMs;
+    this.diagnostics.smoothPlaybackAppliedCount = receiver.appliedCount;
+    this.diagnostics.smoothPlaybackJitterBufferTargetSupported = receiver.jitterBufferTargetSupported;
+    this.diagnostics.smoothPlaybackPlayoutDelayHintSupported = receiver.playoutDelayHintSupported;
+
+    const video = this.options.videoElement;
+    this.diagnostics.videoElementWidth = video.videoWidth || 0;
+    this.diagnostics.videoElementHeight = video.videoHeight || 0;
+    this.diagnostics.videoReadyState = video.readyState;
+    this.diagnostics.videoPaused = video.paused;
+    this.diagnostics.documentVisibilityState = document.visibilityState;
+    this.diagnostics.documentHasFocus = document.hasFocus();
+    this.diagnostics.documentFullscreenActive = Boolean(document.fullscreenElement);
+    this.diagnostics.streamSidebarOpen = document.body?.dataset?.sidebarOpen === "1";
+    try {
+      const quality = video.getVideoPlaybackQuality?.();
+      if (quality) {
+        this.diagnostics.videoPlaybackTotalFrames = quality.totalVideoFrames;
+        this.diagnostics.videoPlaybackDroppedFrames = quality.droppedVideoFrames;
+        this.diagnostics.videoPlaybackCorruptedFrames = quality.corruptedVideoFrames;
+      }
+    } catch {
+      // Playback quality is optional in Chromium-derived runtimes.
+    }
+  }
+
   private applyStreamSettingsDiagnostics(
     settings: OfferSettings,
     codec: VideoCodec,
@@ -970,6 +1139,7 @@ export class GfnWebRtcClient {
   ): void {
     this.currentCodec = codec;
     this.currentResolution = settings.resolution;
+    this.pointerLogicalResolution = settings.resolution;
     this.isHdr = settings.colorQuality.startsWith("10bit");
     this.decoderPressureController.initializeBitrate(settings.maxBitrateKbps);
     const resilientProfile = resolveNvstQualityProfile({
@@ -1077,8 +1247,12 @@ export class GfnWebRtcClient {
       return;
     }
 
+    const collectionStartedAtMs = performance.now();
     const report = await this.pc.getStats();
     const now = performance.now();
+    this.diagnostics.statsCollectionDurationMs = Math.round(
+      (now - collectionStartedAtMs) * 10,
+    ) / 10;
     let inboundVideo: Record<string, unknown> | null = null;
     let activePair: Record<string, unknown> | null = null;
     const codecs = new Map<string, Record<string, unknown>>();
@@ -1129,7 +1303,12 @@ export class GfnWebRtcClient {
       const packetsReceived = Number(inboundVideo.packetsReceived ?? 0);
       const packetsLost = Number(inboundVideo.packetsLost ?? 0);
       const totalDecodeTime = Number(inboundVideo.totalDecodeTime ?? 0);
+      const jitterBufferDelay = Number(inboundVideo.jitterBufferDelay ?? 0);
+      const jitterBufferEmittedCount = Number(inboundVideo.jitterBufferEmittedCount ?? 0);
       const prevSample = this.lastStatsSample;
+      this.diagnostics.statsPollIntervalMs = prevSample
+        ? Math.round((now - prevSample.atMs) * 10) / 10
+        : 0;
 
       // Calculate bitrate
       if (prevSample) {
@@ -1138,6 +1317,14 @@ export class GfnWebRtcClient {
         if (bytesDelta >= 0 && timeDeltaMs > 0) {
           const kbps = (bytesDelta * 8) / (timeDeltaMs / 1000) / 1000;
           this.diagnostics.bitrateKbps = Math.max(0, Math.round(kbps));
+        }
+
+        const delayDelta = jitterBufferDelay - prevSample.jitterBufferDelay;
+        const emittedDelta = jitterBufferEmittedCount - prevSample.jitterBufferEmittedCount;
+        if (delayDelta >= 0 && emittedDelta > 0) {
+          this.diagnostics.jitterBufferCurrentDelayMs = Math.round(
+            (delayDelta / emittedDelta) * 1000 * 10,
+          ) / 10;
         }
 
         const frameRates = computeIntervalFrameRates({
@@ -1176,6 +1363,8 @@ export class GfnWebRtcClient {
         packetsReceived,
         packetsLost,
         totalDecodeTime,
+        jitterBufferDelay,
+        jitterBufferEmittedCount,
         atMs: now,
       };
 
@@ -1187,6 +1376,11 @@ export class GfnWebRtcClient {
       this.diagnostics.nackCount = Number(inboundVideo.nackCount ?? 0);
       this.diagnostics.pliCount = Number(inboundVideo.pliCount ?? 0);
       this.diagnostics.firCount = Number(inboundVideo.firCount ?? 0);
+      this.diagnostics.retransmittedPacketsReceived = Number(inboundVideo.retransmittedPacketsReceived ?? 0);
+      this.diagnostics.retransmittedBytesReceived = Number(inboundVideo.retransmittedBytesReceived ?? 0);
+      this.diagnostics.fecPacketsReceived = Number(inboundVideo.fecPacketsReceived ?? 0);
+      this.diagnostics.fecPacketsDiscarded = Number(inboundVideo.fecPacketsDiscarded ?? 0);
+      this.diagnostics.packetsDiscarded = Number(inboundVideo.packetsDiscarded ?? 0);
       this.diagnostics.freezeCount = Number(inboundVideo.freezeCount ?? 0);
       this.diagnostics.totalFreezesDurationMs = Math.round(
         Number(inboundVideo.totalFreezesDuration ?? 0) * 1000,
@@ -1213,6 +1407,13 @@ export class GfnWebRtcClient {
       // Average = (delay / emittedCount) * 1000 for milliseconds.
       const jbDelay = Number(inboundVideo.jitterBufferDelay ?? 0);
       const jbEmitted = Number(inboundVideo.jitterBufferEmittedCount ?? 0);
+      this.diagnostics.jitterBufferEmittedCount = jbEmitted;
+      this.diagnostics.jitterBufferMinimumDelayMs = jbEmitted > 0
+        ? Math.round((Number(inboundVideo.jitterBufferMinimumDelay ?? 0) / jbEmitted) * 1000 * 10) / 10
+        : 0;
+      this.diagnostics.jitterBufferTargetDelayMs = jbEmitted > 0
+        ? Math.round((Number(inboundVideo.jitterBufferTargetDelay ?? 0) / jbEmitted) * 1000 * 10) / 10
+        : 0;
       const avgJitterBufferDelayMs = averageJitterBufferDelayMs(jbDelay, jbEmitted);
       if (avgJitterBufferDelayMs !== null) {
         this.diagnostics.jitterBufferDelayMs = avgJitterBufferDelayMs;
@@ -1249,6 +1450,16 @@ export class GfnWebRtcClient {
       // Get decode timing if available
       const totalInterFrameDelay = Number(inboundVideo.totalInterFrameDelay ?? 0);
       const framesDecodedForTiming = Number(inboundVideo.framesDecoded ?? 1);
+      this.diagnostics.averageProcessingDelayMs = framesDecodedForTiming > 0
+        ? Math.round((Number(inboundVideo.totalProcessingDelay ?? 0) / framesDecodedForTiming) * 1000 * 10) / 10
+        : 0;
+      const framesAssembled = Number(inboundVideo.framesAssembledFromMultiplePackets ?? 0);
+      this.diagnostics.framesAssembledFromMultiplePackets = framesAssembled;
+      this.diagnostics.averageAssemblyTimeMs = framesAssembled > 0
+        ? Math.round((Number(inboundVideo.totalAssemblyTime ?? 0) / framesAssembled) * 1000 * 10) / 10
+        : 0;
+      this.diagnostics.decoderImplementation = String(inboundVideo.decoderImplementation ?? "");
+      this.diagnostics.powerEfficientDecoder = inboundVideo.powerEfficientDecoder === true;
 
       if (
         !prevSample &&
@@ -1382,7 +1593,8 @@ export class GfnWebRtcClient {
       rttMs: this.diagnostics.rttMs,
       packetLossPercent: this.diagnostics.packetLossPercent,
       jitterMs: this.diagnostics.jitterMs,
-      jitterBufferDelayMs: this.diagnostics.jitterBufferDelayMs,
+      jitterBufferDelayMs: this.diagnostics.jitterBufferCurrentDelayMs
+        || this.diagnostics.jitterBufferDelayMs,
       inputQueueBufferedBytes: reliableBufferedAmount,
       inputQueueDropCount: this.inputQueueDropCount,
       decoderPressureActive: pressureSignal.active,
@@ -1413,6 +1625,7 @@ export class GfnWebRtcClient {
     this.partiallyReliableInputQueuePeakBufferedBytesWindow = partiallyReliableBufferedAmount;
     this.inputQueueMaxSchedulingDelayMsWindow = 0;
 
+    this.syncInputAndReceiverDiagnostics();
     this.emitStats();
   }
 

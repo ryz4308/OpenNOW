@@ -31,6 +31,10 @@ import {
   quantizeMouseDeltaWithResidual,
   subsampleCoalescedPointerEvents,
 } from "./mouseInput";
+import {
+  mapAbsolutePointerToLogicalExtent,
+  type AbsolutePointerPosition,
+} from "./absolutePointerCoordinateGuard";
 
 interface DomInputCaptureDependencies {
   videoElement: HTMLVideoElement;
@@ -41,6 +45,7 @@ interface DomInputCaptureDependencies {
   isNativeElectronInputBridge: () => boolean;
   shouldAutoFullscreen: () => boolean;
   getCurrentResolution: () => string;
+  getLogicalPointerResolution: () => string;
   getKeyboardLayout: () => KeyboardLayout | undefined;
   getMicState: () => string;
   setWindowInputPaused: (paused: boolean) => void;
@@ -51,6 +56,7 @@ interface DomInputCaptureDependencies {
   sendInputPacket: (payload: Uint8Array, inputType: number) => void;
   onGamepadConnected: (event: GamepadEvent) => void;
   onGamepadDisconnected: (event: GamepadEvent) => void;
+  onDiagnosticsChanged?: () => void;
   log: (message: string) => void;
 }
 
@@ -61,6 +67,23 @@ export interface MouseInputDiagnostics {
   packetsPerSecond: number;
   residualMagnitude: number;
   adaptiveFlushActive: boolean;
+  absoluteGuardEnabled: boolean;
+  pointerLocked: boolean;
+  pointerLockLossCount: number;
+  pointerRelockAttemptCount: number;
+  pointerRelockSuccessCount: number;
+  pointerRelockFailureCount: number;
+  pointerLockLastChangeReason: string;
+  escapeFallbackActive: boolean;
+  absoluteMappingCount: number;
+  absoluteMappingRevision: number;
+  absoluteMappingActive: boolean;
+  absoluteLocalWidth: number;
+  absoluteLocalHeight: number;
+  absoluteLogicalWidth: number;
+  absoluteLogicalHeight: number;
+  absoluteLastX: number;
+  absoluteLastY: number;
 }
 
 const EMPTY_CURSOR_VIEWPORT_DIAGNOSTICS: CursorViewportDiagnostics = {
@@ -126,6 +149,24 @@ export class DomInputCaptureController {
   private mouseFlushLastSendMs = 0;
   private mouseCoalescedBatchEntries = 0;
   private nativeCursorOverlayEnabled: boolean;
+  private absolutePointerCoordinateGuardEnabled: boolean;
+  private pointerLockLossCount = 0;
+  private pointerLocked = false;
+  private pointerRelockAttemptCount = 0;
+  private pointerRelockSuccessCount = 0;
+  private pointerRelockFailureCount = 0;
+  private pointerLockLastChangeReason = "initial";
+  private escapeFallbackActive = false;
+  private absoluteMappingCount = 0;
+  private absoluteMappingRevision = 0;
+  private absoluteMappingSignature = "";
+  private absoluteMappingActive = false;
+  private absoluteLocalWidth = 0;
+  private absoluteLocalHeight = 0;
+  private absoluteLogicalWidth = 0;
+  private absoluteLogicalHeight = 0;
+  private absoluteLastX = 0;
+  private absoluteLastY = 0;
 
   constructor(
     private readonly dependencies: DomInputCaptureDependencies,
@@ -134,12 +175,14 @@ export class DomInputCaptureController {
       mouseAccelerationPercent: number;
       mouseFlushIntervalPreference: MouseFlushIntervalPreference;
       nativeCursorOverlay: boolean;
+      absolutePointerCoordinateGuard: boolean;
     },
   ) {
     this.mouseSensitivity = options.mouseSensitivity;
     this.mouseAccelerationPercent = options.mouseAccelerationPercent;
     this.mouseFlushIntervalPreference = options.mouseFlushIntervalPreference;
     this.nativeCursorOverlayEnabled = options.nativeCursorOverlay;
+    this.absolutePointerCoordinateGuardEnabled = options.absolutePointerCoordinateGuard;
   }
 
   setMouseSensitivity(value: number): void {
@@ -225,6 +268,9 @@ export class DomInputCaptureController {
     this.mousePacketsPerSecond = 0;
     this.mousePacketRateWindowStartedAtMs = 0;
     this.lastLockKeysState = -1;
+    this.pointerLocked = false;
+    this.escapeFallbackActive = false;
+    this.absoluteMappingActive = false;
   }
 
   getMouseDiagnostics(): MouseInputDiagnostics {
@@ -235,7 +281,47 @@ export class DomInputCaptureController {
       packetsPerSecond: this.mousePacketsPerSecond,
       residualMagnitude: Math.hypot(this.pendingMouseDxFloat, this.pendingMouseDyFloat),
       adaptiveFlushActive: this.mouseAdaptiveFlushActive,
+      absoluteGuardEnabled: this.absolutePointerCoordinateGuardEnabled,
+      pointerLocked: this.pointerLocked,
+      pointerLockLossCount: this.pointerLockLossCount,
+      pointerRelockAttemptCount: this.pointerRelockAttemptCount,
+      pointerRelockSuccessCount: this.pointerRelockSuccessCount,
+      pointerRelockFailureCount: this.pointerRelockFailureCount,
+      pointerLockLastChangeReason: this.pointerLockLastChangeReason,
+      escapeFallbackActive: this.escapeFallbackActive,
+      absoluteMappingCount: this.absoluteMappingCount,
+      absoluteMappingRevision: this.absoluteMappingRevision,
+      absoluteMappingActive: this.absoluteMappingActive,
+      absoluteLocalWidth: this.absoluteLocalWidth,
+      absoluteLocalHeight: this.absoluteLocalHeight,
+      absoluteLogicalWidth: this.absoluteLogicalWidth,
+      absoluteLogicalHeight: this.absoluteLogicalHeight,
+      absoluteLastX: this.absoluteLastX,
+      absoluteLastY: this.absoluteLastY,
     };
+  }
+
+  private guardAbsolutePointer(position: AbsolutePointerPosition): AbsolutePointerPosition {
+    const logical = parseResolution(this.dependencies.getLogicalPointerResolution());
+    const guarded = this.absolutePointerCoordinateGuardEnabled
+      ? mapAbsolutePointerToLogicalExtent(position, logical)
+      : position;
+    this.absoluteMappingActive = this.absolutePointerCoordinateGuardEnabled;
+    this.absoluteMappingCount++;
+    this.absoluteLocalWidth = position.width;
+    this.absoluteLocalHeight = position.height;
+    this.absoluteLogicalWidth = guarded.width;
+    this.absoluteLogicalHeight = guarded.height;
+    this.absoluteLastX = guarded.x;
+    this.absoluteLastY = guarded.y;
+    const signature = `${position.width.toFixed(1)}x${position.height.toFixed(1)}>${guarded.width.toFixed(0)}x${guarded.height.toFixed(0)}`;
+    if (signature !== this.absoluteMappingSignature) {
+      this.absoluteMappingSignature = signature;
+      this.absoluteMappingRevision++;
+      this.dependencies.log(`Absolute pointer map ${signature}`);
+      this.dependencies.onDiagnosticsChanged?.();
+    }
+    return guarded;
   }
 
   getCursorViewportDiagnostics(): CursorViewportDiagnostics {
@@ -785,9 +871,10 @@ export class DomInputCaptureController {
       const x = Math.max(0, Math.min(rect.width, event.clientX - rect.left));
       const y = Math.max(0, Math.min(rect.height, event.clientY - rect.top));
       this.cursorOverlay?.setClientPosition(rect.left + x, rect.top + y);
-      this.pendingMouseAbs = this.cursorOverlay?.isCursorVisible()
-        ? this.cursorOverlay.getAbsolutePosition()
+      const localAbsolute = this.cursorOverlay?.isCursorVisible()
+        ? this.cursorOverlay.getAbsolutePosition() ?? { x, y, width: rect.width, height: rect.height }
         : { x, y, width: rect.width, height: rect.height };
+      this.pendingMouseAbs = this.guardAbsolutePointer(localAbsolute);
       this.pendingMouseTimestampUs = timestampUs(event.timeStamp);
       this.mouseCoalescedBatchEntries += 1;
       if (flushAfterQueue) {
@@ -827,12 +914,13 @@ export class DomInputCaptureController {
           if (overlayAbs) {
             // Overlay cursor is visible: pin the server cursor with one
             // absolute packet instead of simulating relative moves.
+            const guardedAbs = this.guardAbsolutePointer(overlayAbs);
             const movePayload = this.dependencies.inputEncoder.encodeMouseAbsolute({
-              ...overlayAbs,
+              ...guardedAbs,
               timestampUs: timestampUs(),
             });
             this.dependencies.sendReliable(movePayload);
-            markServerCursorAt(overlayAbs);
+            markServerCursorAt(guardedAbs);
           } else {
             // Translate the element-local target into server pixels.
             const targetServerX = Math.round(targetAbsX * scaleX);
@@ -927,7 +1015,7 @@ export class DomInputCaptureController {
           }
           this.pendingMouseDxFloat = 0;
           this.pendingMouseDyFloat = 0;
-          this.pendingMouseAbs = abs;
+          this.pendingMouseAbs = this.guardAbsolutePointer(abs);
           if (this.pendingMouseTimestampUs === null) {
             this.pendingMouseTimestampUs = timestampUs(eventTimestampMs);
           }
@@ -1244,11 +1332,17 @@ export class DomInputCaptureController {
           return;
         }
 
+        this.pointerRelockAttemptCount++;
+        this.pointerLockLastChangeReason = `relock-attempt:${reason}`;
+        this.dependencies.onDiagnosticsChanged?.();
         void this.requestPointerLockWithOptionalFullscreen(target, false)
           .then(() => {
             this.dependencies.log(`Pointer lock restored after ${reason}`);
           })
           .catch((error: unknown) => {
+            this.pointerRelockFailureCount++;
+            this.pointerLockLastChangeReason = `relock-failed:${reason}`;
+            this.dependencies.onDiagnosticsChanged?.();
             this.dependencies.log(`Pointer lock restore failed after ${reason}: ${String(error)}`);
           });
       }, 75);
@@ -1263,7 +1357,16 @@ export class DomInputCaptureController {
       const pointerLockIsActive = isPointerLockActive();
       if (pointerLockIsActive) {
         pointerLockWasActive = true;
+        this.pointerLocked = true;
         escapePointerFallbackActive = false;
+        this.escapeFallbackActive = false;
+        if (this.pointerRelockAttemptCount > this.pointerRelockSuccessCount + this.pointerRelockFailureCount) {
+          this.pointerRelockSuccessCount++;
+          this.pointerLockLastChangeReason = "relock-acquired";
+        } else {
+          this.pointerLockLastChangeReason = "pointer-lock-acquired";
+        }
+        this.dependencies.onDiagnosticsChanged?.();
         this.cursorOverlay?.setPointerLocked(true);
         // Pointer lock gained — cancel any pending synthetic Escape.
         // Reset absolute position tracking since we switch to relative movement.
@@ -1295,6 +1398,12 @@ export class DomInputCaptureController {
         return;
       }
       pointerLockWasActive = false;
+      this.pointerLocked = false;
+      this.pointerLockLossCount++;
+      this.pointerLockLastChangeReason = document.visibilityState !== "visible"
+        ? "document-hidden"
+        : (!document.hasFocus() ? "window-unfocused" : "browser-pointer-lock-exit");
+      this.dependencies.onDiagnosticsChanged?.();
 
       const suppressEscapeFullscreenGrace = this.suppressNextSyntheticEscape;
       this.cursorOverlay?.setPointerLocked(false);
@@ -1313,22 +1422,31 @@ export class DomInputCaptureController {
 
       if (this.consumeSyntheticEscapeSuppression()) {
         escapePointerFallbackActive = false;
+        this.escapeFallbackActive = false;
+        this.pointerLockLastChangeReason = "intentional-release";
+        this.dependencies.onDiagnosticsChanged?.();
         this.releasePressedKeys("pointer lock intentionally released");
         return;
       }
 
       if (!this.shouldSendSyntheticEscapeOnPointerLockLoss()) {
         escapePointerFallbackActive = false;
+        this.escapeFallbackActive = false;
+        this.pointerLockLastChangeReason = "pointer-lock-lost-unfocused";
+        this.dependencies.onDiagnosticsChanged?.();
         this.releasePressedKeys("pointer lock lost while unfocused");
         return;
       }
 
       escapePointerFallbackActive = true;
+      this.escapeFallbackActive = true;
 
       // VK 0x1B = 27 = Escape
       const escapeWasPressed = this.pressedKeys.has(0x1B);
 
       if (escapeWasPressed) {
+        this.pointerLockLastChangeReason = "tracked-escape";
+        this.dependencies.onDiagnosticsChanged?.();
         // Escape was already tracked as pressed — the normal keyup handler will fire
         // and send Escape keyup to the server. No synthetic needed, but Chromium
         // still released pointer lock, so restore it after keyup has a chance to run.
@@ -1354,6 +1472,8 @@ export class DomInputCaptureController {
 
         // Send synthetic Escape keydown + keyup
         this.dependencies.log("Sending synthetic Escape (pointer lock lost by browser)");
+        this.pointerLockLastChangeReason = "synthetic-escape";
+        this.dependencies.onDiagnosticsChanged?.();
         const escDown = this.dependencies.inputEncoder.encodeKeyDown({
           keycode: 0x1B,
           scancode: codeMap.Escape.scancode,
@@ -1383,6 +1503,7 @@ export class DomInputCaptureController {
       }
       mouseInStreamView = false;
       escapePointerFallbackActive = false;
+      this.escapeFallbackActive = false;
       lastAbsX = null;
       lastAbsY = null;
       this.releasePressedKeys("window blur");
@@ -1397,6 +1518,7 @@ export class DomInputCaptureController {
     const onVisibilityChange = () => {
       if (document.visibilityState !== "visible") {
         escapePointerFallbackActive = false;
+        this.escapeFallbackActive = false;
         this.releasePressedKeys(`visibility ${document.visibilityState}`);
         this.dependencies.setWindowInputPaused(true);
         return;

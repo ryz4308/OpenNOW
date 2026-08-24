@@ -93,12 +93,18 @@ export interface Settings {
   steamControllerCompatibilityMode: boolean;
   /** Use the WebRTC cursor_channel overlay instead of leaving cursor rendering to the stream. */
   nativeCursorOverlay: boolean;
+  /** Keep unlocked absolute pointer input in the requested remote desktop coordinate space. */
+  absolutePointerCoordinateGuard: boolean;
   mouseSensitivity: number;
   mouseAcceleration: number;
   /** WebRTC mouse-movement coalescing interval; auto preserves platform detection. */
   mouseFlushIntervalMs: MouseFlushIntervalPreference;
   /** WebRTC-only experimental recovery mode that lowers the bitrate ceiling under network loss. */
   autoRecoveryBitrate: boolean;
+  /** Reduce Chromium compositor complexity around the WebRTC video surface. */
+  compositorSafeMode: boolean;
+  /** Request a small receiver playout buffer to absorb short jitter bursts. */
+  smoothPlaybackBuffer: boolean;
   shortcutToggleStats: string;
   shortcutTogglePointerLock: string;
   shortcutToggleFullscreen: string;
@@ -319,10 +325,13 @@ export function createDefaultSettings(platform: string): Settings {
     enableGyroscopeControls: false,
     steamControllerCompatibilityMode: false,
     nativeCursorOverlay: true,
+    absolutePointerCoordinateGuard: true,
     mouseSensitivity: 1,
     mouseAcceleration: 1,
     mouseFlushIntervalMs: "auto",
     autoRecoveryBitrate: false,
+    compositorSafeMode: true,
+    smoothPlaybackBuffer: true,
     ...shortcuts.bindings,
     microphoneMode: "disabled",
     microphoneDeviceId: "",

@@ -401,6 +401,27 @@ export function SettingsInputSection({ settings, showAll, handleChange, handlePr
           <span className="settings-subtle-hint">{t("settings.input.nativeCursorOverlayHint")}</span>
         </div>
 
+        <div className="settings-row settings-row--toggle">
+          <div className="settings-row-top settings-row-top--compact">
+            <label className="settings-label settings-label--wrap" htmlFor="settings-input-absolute-pointer-guard">
+              <span className="settings-label-title">
+                {t("settings.input.absolutePointerCoordinateGuard")}
+                <span className="settings-inline-badge settings-inline-badge--beta">{t("app.labels.experimental")}</span>
+              </span>
+            </label>
+            <label className="settings-toggle">
+              <input
+                id="settings-input-absolute-pointer-guard"
+                type="checkbox"
+                checked={settings.absolutePointerCoordinateGuard}
+                onChange={(e) => handleChange("absolutePointerCoordinateGuard", e.target.checked)}
+              />
+              <span className="settings-toggle-track" />
+            </label>
+          </div>
+          <span className="settings-subtle-hint">{t("settings.input.absolutePointerCoordinateGuardHint")}</span>
+        </div>
+
         <div className="settings-row settings-row--simple">
           <label className="settings-label settings-label--wrap" htmlFor="settings-input-keyboard-layout">
             {t("settings.game.keyboardLayout")}

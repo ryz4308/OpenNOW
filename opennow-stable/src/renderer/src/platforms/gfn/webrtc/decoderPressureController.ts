@@ -31,6 +31,15 @@ export interface DecoderPressureState {
   recoveryAction: DecoderRecoveryAction;
 }
 
+export interface ReceiverTuningDiagnostics {
+  smoothPlaybackBufferEnabled: boolean;
+  videoTargetMs: number;
+  audioTargetMs: number;
+  appliedCount: number;
+  jitterBufferTargetSupported: boolean;
+  playoutDelayHintSupported: boolean;
+}
+
 interface DecoderPressureControllerDependencies {
   log: (message: string) => void;
   getPeerConnection: () => RTCPeerConnection | null;
@@ -47,6 +56,10 @@ interface DecoderPressureControllerDependencies {
 
 const VIDEO_PRESSURE_JITTER_TARGET_MS = 30;
 const AUDIO_PRESSURE_JITTER_TARGET_MS = 32;
+const VIDEO_SMOOTH_JITTER_TARGET_MS = 45;
+const AUDIO_SMOOTH_JITTER_TARGET_MS = 48;
+const VIDEO_SMOOTH_PRESSURE_TARGET_MS = 60;
+const AUDIO_SMOOTH_PRESSURE_TARGET_MS = 64;
 const PRESSURE_CONSECUTIVE_POLLS = 3;
 const STABLE_CONSECUTIVE_POLLS = 6;
 const RECOVERY_COOLDOWN_MS = 1500;
@@ -109,6 +122,10 @@ export class DecoderPressureController {
   private negotiatedMaxBitrateKbps = 0;
   private currentBitrateCeilingKbps = 0;
   private recoveryAction: DecoderRecoveryAction = "none";
+  private smoothPlaybackBufferEnabled = false;
+  private receiverTuningAppliedCount = 0;
+  private jitterBufferTargetSupported = false;
+  private playoutDelayHintSupported = false;
   private readonly receiverLatencyTargets: Record<"video" | "audio", number | null> = {
     video: null,
     audio: null,
@@ -132,6 +149,29 @@ export class DecoderPressureController {
     this.currentBitrateCeilingKbps = this.negotiatedMaxBitrateKbps;
   }
 
+  setSmoothPlaybackBufferEnabled(enabled: boolean): void {
+    if (this.smoothPlaybackBufferEnabled === enabled) {
+      return;
+    }
+    this.smoothPlaybackBufferEnabled = enabled;
+    this.updateReceiverLatencyTargets();
+    for (const { receiver, kind } of this.activeReceivers) {
+      this.configureReceiver(receiver, kind);
+    }
+    this.dependencies.log(`Smooth playback buffer ${enabled ? "enabled" : "disabled"}`);
+  }
+
+  getReceiverTuningDiagnostics(): ReceiverTuningDiagnostics {
+    return {
+      smoothPlaybackBufferEnabled: this.smoothPlaybackBufferEnabled,
+      videoTargetMs: this.receiverLatencyTargets.video ?? 0,
+      audioTargetMs: this.receiverLatencyTargets.audio ?? 0,
+      appliedCount: this.receiverTuningAppliedCount,
+      jitterBufferTargetSupported: this.jitterBufferTargetSupported,
+      playoutDelayHintSupported: this.playoutDelayHintSupported,
+    };
+  }
+
   classifySample(sample: DecoderPressureSample): DecoderPressureSignal {
     return classifyDecoderPressureSample(sample);
   }
@@ -148,12 +188,14 @@ export class DecoderPressureController {
       const targetMs = this.receiverLatencyTargets[kind];
       const rawReceiver = receiver as unknown as Record<string, unknown>;
       if ("jitterBufferTarget" in receiver) {
+        this.jitterBufferTargetSupported = true;
         rawReceiver.jitterBufferTarget = targetMs;
         this.dependencies.log(
           `${kind} receiver: jitterBufferTarget ${targetMs === null ? "adaptive" : `${targetMs}ms`}`,
         );
       }
       if ("playoutDelayHint" in receiver) {
+        this.playoutDelayHintSupported = true;
         const playoutDelaySeconds = targetMs === null ? null : targetMs / 1000;
         rawReceiver.playoutDelayHint = playoutDelaySeconds;
         this.dependencies.log(
@@ -163,6 +205,7 @@ export class DecoderPressureController {
       if (kind === "video" && "contentHint" in receiver.track) {
         receiver.track.contentHint = "motion";
       }
+      this.receiverTuningAppliedCount++;
     } catch (error) {
       this.dependencies.log(
         `Warning: could not apply ${kind} low-latency receiver tuning: ${String(error)}`,
@@ -180,9 +223,11 @@ export class DecoderPressureController {
     this.negotiatedMaxBitrateKbps = 0;
     this.currentBitrateCeilingKbps = 0;
     this.recoveryAction = "none";
-    this.receiverLatencyTargets.video = null;
-    this.receiverLatencyTargets.audio = null;
+    this.receiverTuningAppliedCount = 0;
+    this.jitterBufferTargetSupported = false;
+    this.playoutDelayHintSupported = false;
     this.activeReceivers = [];
+    this.updateReceiverLatencyTargets();
     this.emitState();
   }
 
@@ -240,12 +285,7 @@ export class DecoderPressureController {
       return;
     }
     this.pressureActive = active;
-    this.receiverLatencyTargets.video = active
-      ? VIDEO_PRESSURE_JITTER_TARGET_MS
-      : null;
-    this.receiverLatencyTargets.audio = active
-      ? AUDIO_PRESSURE_JITTER_TARGET_MS
-      : null;
+    this.updateReceiverLatencyTargets();
     this.dependencies.log(
       `Decoder pressure mode ${active ? "enabled" : "cleared"}; receiver targets video=${this.receiverLatencyTargets.video ?? "adaptive"} audio=${this.receiverLatencyTargets.audio ?? "adaptive"}`,
     );
@@ -253,6 +293,24 @@ export class DecoderPressureController {
       this.configureReceiver(receiver, kind);
     }
     this.emitState();
+  }
+
+  private updateReceiverLatencyTargets(): void {
+    if (this.pressureActive) {
+      this.receiverLatencyTargets.video = this.smoothPlaybackBufferEnabled
+        ? VIDEO_SMOOTH_PRESSURE_TARGET_MS
+        : VIDEO_PRESSURE_JITTER_TARGET_MS;
+      this.receiverLatencyTargets.audio = this.smoothPlaybackBufferEnabled
+        ? AUDIO_SMOOTH_PRESSURE_TARGET_MS
+        : AUDIO_PRESSURE_JITTER_TARGET_MS;
+      return;
+    }
+    this.receiverLatencyTargets.video = this.smoothPlaybackBufferEnabled
+      ? VIDEO_SMOOTH_JITTER_TARGET_MS
+      : null;
+    this.receiverLatencyTargets.audio = this.smoothPlaybackBufferEnabled
+      ? AUDIO_SMOOTH_JITTER_TARGET_MS
+      : null;
   }
 
   private async requestKeyframe(

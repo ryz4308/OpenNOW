@@ -7,6 +7,9 @@ export interface DiagnosticsRecorderContext {
   targetFps?: number;
   requestedMaxBitrateMbps?: number;
   resilientNetworkProfile?: boolean;
+  absolutePointerCoordinateGuard?: boolean;
+  compositorSafeMode?: boolean;
+  smoothPlaybackBuffer?: boolean;
 }
 
 export interface DiagnosticEvent {
@@ -70,7 +73,7 @@ export class StreamDiagnosticsRecorder {
   exportReport(generatedAtMs = Date.now()): Record<string, unknown> {
     const finishedAt = this.samples.at(-1)?.timestamp ?? new Date(generatedAtMs).toISOString();
     return {
-      schemaVersion: 4,
+      schemaVersion: 6,
       generatedAt: new Date(generatedAtMs).toISOString(),
       captureStartedAt: new Date(this.startedAtMs).toISOString(),
       captureFinishedAt: finishedAt,
@@ -80,6 +83,11 @@ export class StreamDiagnosticsRecorder {
         "streamIdentifier is a local alias; the NVIDIA session identifier is not exported.",
         "availableBitrateKbps is browser-estimated and may be unavailable or inaccurate.",
         "Cursor Viewport Guard events record CSS viewport, source resolution, and DPI resynchronization.",
+        "Absolute pointer mapping uses the requested logical desktop; adaptive video resolution is reported separately.",
+        "jitterBufferCurrentDelayMs is an interval value; jitterBufferDelayMs is the cumulative session average.",
+        "Playback-frame drops and renderer stalls are local presentation signals and can occur with a healthy decoder/network.",
+        "STATS_POLL_STALL marks delayed diagnostics sampling and is a useful proxy for a blocked renderer/main thread, not a network-loss counter.",
+        "Resilient Network Profile describes the negotiated startup profile; recoveryAttempts only counts runtime recovery actions.",
         "NETWORK_STALL and RENDER_STALL are diagnostic classifications, not proof of a single root cause.",
       ],
       summary: this.buildSummary(),
@@ -129,6 +137,55 @@ export class StreamDiagnosticsRecorder {
           pointerLocked: stats.cursorPointerLocked,
         });
       }
+      if (
+        stats.cursorPointerLocked !== previous.cursorPointerLocked
+        || stats.pointerLockLossCount !== previous.pointerLockLossCount
+        || stats.pointerRelockAttemptCount !== previous.pointerRelockAttemptCount
+      ) {
+        this.pushEvent(nowMs, "POINTER_LOCK_CHANGED", stats.pointerLockLastChangeReason, {
+          pointerLocked: stats.cursorPointerLocked,
+          lossCount: stats.pointerLockLossCount,
+          relockAttempts: stats.pointerRelockAttemptCount,
+          relockSuccesses: stats.pointerRelockSuccessCount,
+          relockFailures: stats.pointerRelockFailureCount,
+          escapeFallbackActive: stats.pointerEscapeFallbackActive,
+          documentHasFocus: stats.documentHasFocus,
+          visibility: stats.documentVisibilityState,
+          fullscreen: stats.documentFullscreenActive,
+          sidebarOpen: stats.streamSidebarOpen,
+        });
+      }
+      if (stats.absolutePointerMappingRevision !== previous.absolutePointerMappingRevision) {
+        this.pushEvent(nowMs, "ABSOLUTE_POINTER_MAPPING_CHANGED", "Absolute pointer coordinate space changed", {
+          enabled: stats.absolutePointerGuardEnabled,
+          localWidth: round(stats.absolutePointerLocalWidth, 1),
+          localHeight: round(stats.absolutePointerLocalHeight, 1),
+          logicalWidth: round(stats.absolutePointerLogicalWidth, 1),
+          logicalHeight: round(stats.absolutePointerLogicalHeight, 1),
+          lastX: round(stats.absolutePointerLastX, 1),
+          lastY: round(stats.absolutePointerLastY, 1),
+        });
+      }
+      this.recordChangedBoolean(nowMs, "COMPOSITOR_SAFE_MODE_CHANGED", "compositor safe mode", previous.compositorSafeModeEnabled, stats.compositorSafeModeEnabled);
+      this.recordChangedBoolean(nowMs, "SMOOTH_BUFFER_CHANGED", "smooth playback buffer", previous.smoothPlaybackBufferEnabled, stats.smoothPlaybackBufferEnabled);
+      if (stats.smoothPlaybackAppliedCount > previous.smoothPlaybackAppliedCount) {
+        this.pushEvent(nowMs, "SMOOTH_BUFFER_APPLIED", "Receiver playout targets applied", {
+          appliedCount: stats.smoothPlaybackAppliedCount,
+          videoTargetMs: stats.smoothPlaybackVideoTargetMs,
+          audioTargetMs: stats.smoothPlaybackAudioTargetMs,
+          jitterBufferTargetSupported: stats.smoothPlaybackJitterBufferTargetSupported,
+          playoutDelayHintSupported: stats.smoothPlaybackPlayoutDelayHintSupported,
+        });
+      }
+      if (stats.videoPlaybackDroppedFrames > previous.videoPlaybackDroppedFrames) {
+        this.pushSpikeEvent(nowMs, "VIDEO_PRESENTATION_DROP_SPIKE", "Chromium video presentation dropped frames", {
+          droppedDelta: stats.videoPlaybackDroppedFrames - previous.videoPlaybackDroppedFrames,
+          droppedTotal: stats.videoPlaybackDroppedFrames,
+          playbackTotal: stats.videoPlaybackTotalFrames,
+          decodeFps: stats.decodeFps,
+          renderFps: stats.renderFps,
+        });
+      }
       this.recordCounterIncrease(nowMs, "KEYFRAME_DECODED", "keyFramesDecoded", previous.keyFramesDecoded, stats.keyFramesDecoded);
       this.recordCounterIncrease(nowMs, "NACK_INCREASED", "nackCount", previous.nackCount, stats.nackCount);
       this.recordCounterIncrease(nowMs, "PLI_INCREASED", "pliCount", previous.pliCount, stats.pliCount);
@@ -159,6 +216,17 @@ export class StreamDiagnosticsRecorder {
       this.pushSpikeEvent(nowMs, "RTT_SPIKE", `${stats.rttMs.toFixed(1)} ms RTT`, {
         rttMs: round(stats.rttMs, 1),
         jitterMs: round(stats.jitterMs, 1),
+      });
+    }
+    if (stats.statsPollIntervalMs >= 1_500 || stats.statsCollectionDurationMs >= 250) {
+      this.pushSpikeEvent(nowMs, "STATS_POLL_STALL", "WebRTC statistics sampling was delayed", {
+        pollIntervalMs: round(stats.statsPollIntervalMs, 1),
+        collectionDurationMs: round(stats.statsCollectionDurationMs, 1),
+        packetLossPercent: round(stats.packetLossPercent, 3),
+        decodeFps: stats.decodeFps,
+        renderFps: stats.renderFps,
+        documentHasFocus: stats.documentHasFocus,
+        visibility: stats.documentVisibilityState,
       });
     }
   }
@@ -192,6 +260,17 @@ export class StreamDiagnosticsRecorder {
   ): void {
     if (previous === current || (!previous && !current)) return;
     this.pushEvent(nowMs, eventType, `${label}: ${previous || "none"} -> ${current || "none"}`);
+  }
+
+  private recordChangedBoolean(
+    nowMs: number,
+    eventType: string,
+    label: string,
+    previous: boolean,
+    current: boolean,
+  ): void {
+    if (previous === current) return;
+    this.pushEvent(nowMs, eventType, `${label}: ${previous ? "on" : "off"} -> ${current ? "on" : "off"}`);
   }
 
   private recordCounterIncrease(
@@ -257,6 +336,12 @@ export class StreamDiagnosticsRecorder {
       renderFps: this.samples.map((sample) => sample.renderFps),
       decodeTimeMs: this.samples.map((sample) => sample.decodeTimeMs),
       jitterBufferDelayMs: this.samples.map((sample) => sample.jitterBufferDelayMs),
+      jitterBufferCurrentDelayMs: this.samples.map((sample) => sample.jitterBufferCurrentDelayMs),
+      videoPlaybackDroppedFrames: this.samples.map((sample) => sample.videoPlaybackDroppedFrames),
+      pointerLockLossCount: this.samples.map((sample) => sample.pointerLockLossCount),
+      statsPollIntervalMs: this.samples.map((sample) => sample.statsPollIntervalMs),
+      statsCollectionDurationMs: this.samples.map((sample) => sample.statsCollectionDurationMs),
+      averageProcessingDelayMs: this.samples.map((sample) => sample.averageProcessingDelayMs),
     };
     return {
       sampleCount: this.samples.length,
@@ -277,6 +362,15 @@ export class StreamDiagnosticsRecorder {
         firCount: this.samples.at(-1)!.firCount,
         freezeCount: this.samples.at(-1)!.freezeCount,
         totalFreezesDurationMs: this.samples.at(-1)!.totalFreezesDurationMs,
+        videoPlaybackDroppedFrames: this.samples.at(-1)!.videoPlaybackDroppedFrames,
+        pointerLockLossCount: this.samples.at(-1)!.pointerLockLossCount,
+        pointerRelockAttemptCount: this.samples.at(-1)!.pointerRelockAttemptCount,
+        pointerRelockSuccessCount: this.samples.at(-1)!.pointerRelockSuccessCount,
+        pointerRelockFailureCount: this.samples.at(-1)!.pointerRelockFailureCount,
+        retransmittedPacketsReceived: this.samples.at(-1)!.retransmittedPacketsReceived,
+        fecPacketsReceived: this.samples.at(-1)!.fecPacketsReceived,
+        fecPacketsDiscarded: this.samples.at(-1)!.fecPacketsDiscarded,
+        packetsDiscarded: this.samples.at(-1)!.packetsDiscarded,
       } : null,
     };
   }
@@ -287,12 +381,14 @@ function diagnosticValues(stats: StreamDiagnostics): Record<string, number | str
     packetLossPercent: round(stats.packetLossPercent, 3),
     rttMs: round(stats.rttMs, 1),
     jitterMs: round(stats.jitterMs, 1),
+    jitterBufferCurrentDelayMs: round(stats.jitterBufferCurrentDelayMs, 1),
     receiveFps: stats.receiveFps,
     decodeFps: stats.decodeFps,
     renderFps: stats.renderFps,
     bitrateKbps: stats.bitrateKbps,
     resolution: stats.resolution,
     lagReason: stats.lagReason,
+    videoPlaybackDroppedFrames: stats.videoPlaybackDroppedFrames,
   };
 }
 
