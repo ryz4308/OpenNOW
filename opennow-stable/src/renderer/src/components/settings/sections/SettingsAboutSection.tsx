@@ -305,7 +305,7 @@ export function SettingsAboutSection({
                   // Keep the redacted raw value when the main process has no JSON capture yet.
                 }
                 const report = {
-                  schemaVersion: 3,
+                  schemaVersion: 4,
                   generatedAt: new Date().toISOString(),
                   environment: {
                     platform: navigator.platform,
@@ -318,7 +318,7 @@ export function SettingsAboutSection({
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement("a");
                 a.href = url;
-                a.download = `opennow-diagnostics-v3-${new Date().toISOString().replace(/[:.]/g, "-")}.json`;
+                a.download = `opennow-diagnostics-v4-${new Date().toISOString().replace(/[:.]/g, "-")}.json`;
                 document.body.appendChild(a);
                 a.click();
                 document.body.removeChild(a);

@@ -441,6 +441,17 @@ export class GfnWebRtcClient {
     mousePacketsPerSecond: 0,
     mouseResidualMagnitude: 0,
     mouseAdaptiveFlushActive: false,
+    cursorOverlayVisible: false,
+    cursorPointerLocked: false,
+    cursorViewportWidth: 0,
+    cursorViewportHeight: 0,
+    cursorVideoRectWidth: 0,
+    cursorVideoRectHeight: 0,
+    cursorSourceWidth: 0,
+    cursorSourceHeight: 0,
+    cursorDevicePixelRatio: 1,
+    cursorViewportResyncCount: 0,
+    cursorViewportLastResyncReason: "disabled",
     lagReason: "unknown",
     lagReasonDetail: "Waiting for stream stats",
     gpuType: "",
@@ -897,6 +908,17 @@ export class GfnWebRtcClient {
       mousePacketsPerSecond: mouseDiagnostics.packetsPerSecond,
       mouseResidualMagnitude: 0,
       mouseAdaptiveFlushActive: mouseDiagnostics.adaptiveFlushActive,
+      cursorOverlayVisible: false,
+      cursorPointerLocked: false,
+      cursorViewportWidth: 0,
+      cursorViewportHeight: 0,
+      cursorVideoRectWidth: 0,
+      cursorVideoRectHeight: 0,
+      cursorSourceWidth: 0,
+      cursorSourceHeight: 0,
+      cursorDevicePixelRatio: 1,
+      cursorViewportResyncCount: 0,
+      cursorViewportLastResyncReason: "disabled",
       lagReason: "unknown",
       lagReasonDetail: "Waiting for stream stats",
       gpuType: this.gpuType,
@@ -972,7 +994,7 @@ export class GfnWebRtcClient {
     this.diagnostics.networkRecoveryActive = this.diagnostics.networkRecoveryEnabled;
     this.diagnostics.networkRecoveryAttempts = 0;
     this.diagnostics.networkRecoveryAction = this.diagnostics.networkRecoveryEnabled
-      ? "SDP profile applied"
+      ? "Fast Burst Recovery SDP applied"
       : "none";
     this.diagnostics.networkRecoveryTargetBitrateKbps = resilientProfile.maxBitrateKbps;
     this.diagnostics.decodeFps = nativeRendererActive ? settings.fps : 0;
@@ -1298,6 +1320,18 @@ export class GfnWebRtcClient {
     this.diagnostics.mouseFlushIntervalMs = mouseDiagnostics.flushIntervalMs;
     this.diagnostics.mousePacketsPerSecond = mouseDiagnostics.packetsPerSecond;
     this.diagnostics.mouseResidualMagnitude = mouseDiagnostics.residualMagnitude;
+    const cursorDiagnostics = this.domInputController.getCursorViewportDiagnostics();
+    this.diagnostics.cursorOverlayVisible = cursorDiagnostics.visible;
+    this.diagnostics.cursorPointerLocked = cursorDiagnostics.pointerLocked;
+    this.diagnostics.cursorViewportWidth = cursorDiagnostics.viewportWidth;
+    this.diagnostics.cursorViewportHeight = cursorDiagnostics.viewportHeight;
+    this.diagnostics.cursorVideoRectWidth = cursorDiagnostics.videoRectWidth;
+    this.diagnostics.cursorVideoRectHeight = cursorDiagnostics.videoRectHeight;
+    this.diagnostics.cursorSourceWidth = cursorDiagnostics.sourceWidth;
+    this.diagnostics.cursorSourceHeight = cursorDiagnostics.sourceHeight;
+    this.diagnostics.cursorDevicePixelRatio = cursorDiagnostics.devicePixelRatio;
+    this.diagnostics.cursorViewportResyncCount = cursorDiagnostics.resyncCount;
+    this.diagnostics.cursorViewportLastResyncReason = cursorDiagnostics.lastResyncReason;
 
     // An explicit test preference must remain fixed so 4/8/16 ms runs are
     // comparable. Auto mode keeps the existing official behavior: PR mouse uses
@@ -2397,7 +2431,7 @@ export class GfnWebRtcClient {
 
     if (this.options.autoRecoveryBitrate === true) {
       this.log(
-        `Resilient SDP profile: requestedMax=${settings.maxBitrateKbps}kbps, negotiatedMax=${qualityProfile.maxBitrateKbps}kbps, startup=${qualityProfile.startupBitrateKbps}kbps, FEC=${qualityProfile.fecRepairMinPercent}/${qualityProfile.fecRepairPercent}/${qualityProfile.fecRepairMaxPercent}%`,
+        `Fast Burst Recovery SDP: requestedMax=${settings.maxBitrateKbps}kbps, negotiatedMax=${qualityProfile.maxBitrateKbps}kbps, startup=${qualityProfile.startupBitrateKbps}kbps, rateDropWindow=${qualityProfile.fecRateDropWindow}, bitrateIir=${qualityProfile.bitrateIirFilterFactor}, FEC=${qualityProfile.fecRepairMinPercent}/${qualityProfile.fecRepairPercent}/${qualityProfile.fecRepairMaxPercent}%`,
       );
     }
 

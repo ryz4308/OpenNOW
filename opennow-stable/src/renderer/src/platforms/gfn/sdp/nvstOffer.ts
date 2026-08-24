@@ -43,6 +43,7 @@ export interface NvstQualityProfile {
   fecRepairMinPercent: number;
   fecRepairPercent: number;
   fecRepairMaxPercent: number;
+  bitrateIirFilterFactor: number;
 }
 
 /**
@@ -64,20 +65,25 @@ export function resolveNvstQualityProfile(params: Pick<NvstParams, "maxBitrateKb
       fecRepairMinPercent: 5,
       fecRepairPercent: 5,
       fecRepairMaxPercent: 35,
+      bitrateIirFilterFactor: 18,
     };
   }
 
   const maxBitrateKbps = Math.max(
     OFFICIAL_MIN_BITRATE_KBPS,
-    Math.floor(requestedMax * 0.7),
+    Math.floor(requestedMax * 0.65),
   );
   return {
     maxBitrateKbps,
     startupBitrateKbps: OFFICIAL_MIN_BITRATE_KBPS,
-    fecRateDropWindow: 6,
+    // Fast Burst Recovery: react to a short burst in roughly half the old
+    // observation window, while retaining enough headroom that the server's
+    // recovery ramp does not immediately refill the Wi-Fi path.
+    fecRateDropWindow: 3,
     fecRepairMinPercent: 8,
     fecRepairPercent: 10,
     fecRepairMaxPercent: 40,
+    bitrateIirFilterFactor: 8,
   };
 }
 
@@ -176,7 +182,7 @@ export function buildNvstSdp(params: NvstParams): string {
     "a=bwe.useOwdCongestionControl:1",
     "a=video.enableRtpNack:1",
     "a=vqos.bw.txRxLag.minFeedbackTxDeltaMs:200",
-    "a=vqos.drc.bitrateIirFilterFactor:18",
+    `a=vqos.drc.bitrateIirFilterFactor:${qualityProfile.bitrateIirFilterFactor}`,
     "a=video.packetSize:1140",
     // The official web client only sends packetPacing.minNumPacketsPerGroup
     // here (version/mode/enableAccurateSleep/etc. are native-client extras,

@@ -36,11 +36,47 @@ interface GfnCursorShape {
   nativeStyle?: string;
 }
 
-interface StreamViewport {
+export interface StreamViewport {
   originX: number;
   originY: number;
   width: number;
   height: number;
+}
+
+export interface CursorViewportDiagnostics {
+  visible: boolean;
+  pointerLocked: boolean;
+  viewportWidth: number;
+  viewportHeight: number;
+  videoRectWidth: number;
+  videoRectHeight: number;
+  sourceWidth: number;
+  sourceHeight: number;
+  devicePixelRatio: number;
+  resyncCount: number;
+  lastResyncReason: string;
+}
+
+interface StreamViewportSnapshot {
+  viewport: StreamViewport;
+  videoRectWidth: number;
+  videoRectHeight: number;
+  sourceWidth: number;
+  sourceHeight: number;
+  devicePixelRatio: number;
+}
+
+export function remapCursorPositionForViewport(
+  position: GfnCursorPosition,
+  previous: Pick<StreamViewport, "width" | "height">,
+  next: Pick<StreamViewport, "width" | "height">,
+): GfnCursorPosition {
+  const normalizedX = previous.width > 0 ? position.x / previous.width : 0.5;
+  const normalizedY = previous.height > 0 ? position.y / previous.height : 0.5;
+  return {
+    x: Math.max(0, Math.min(next.width, normalizedX * next.width)),
+    y: Math.max(0, Math.min(next.height, normalizedY * next.height)),
+  };
 }
 
 const PREDEFINED_CURSORS: GfnCursorShape[] = [
@@ -197,8 +233,11 @@ export class GfnCursorOverlayController {
   private readonly imageSetFunction: "image-set" | "-webkit-image-set" | null;
   private readonly originalCursor: string;
   private readonly resizeObserver: ResizeObserver | null = null;
-  private readonly onWindowResize = (): void => this.refresh();
-  private readonly onVideoResize = (): void => this.refresh();
+  private readonly onWindowResize = (): void => this.scheduleViewportGuard("window-resize");
+  private readonly onVideoResize = (): void => this.scheduleViewportGuard("video-resize");
+  private readonly onFullscreenChange = (): void => this.scheduleViewportGuard("fullscreen-change");
+  private readonly onPointerLockChange = (): void => this.scheduleViewportGuard("pointer-lock-change");
+  private readonly onLoadedMetadata = (): void => this.scheduleViewportGuard("video-metadata");
 
   private currentCursor: GfnCursorShape = PREDEFINED_CURSORS[1]!;
   private cursorVisible = false;
@@ -208,8 +247,16 @@ export class GfnCursorOverlayController {
   private positionInitialized = false;
   private fallbackResolution: { width: number; height: number } | null = null;
   private imageLoadGeneration = 0;
+  private viewportGuardRaf: number | null = null;
+  private viewportGuardTimer: number | null = null;
+  private lastViewportSnapshot: StreamViewportSnapshot | null = null;
+  private viewportResyncCount = 0;
+  private lastViewportResyncReason = "initial";
 
-  constructor(private readonly videoElement: HTMLVideoElement) {
+  constructor(
+    private readonly videoElement: HTMLVideoElement,
+    private readonly log: (message: string) => void = () => {},
+  ) {
     for (const cursor of PREDEFINED_CURSORS) {
       this.cursorCache.set(cursor.id, cursor);
     }
@@ -236,27 +283,40 @@ export class GfnCursorOverlayController {
     this.originalCursor = videoElement.style.cursor;
 
     if (typeof ResizeObserver !== "undefined") {
-      this.resizeObserver = new ResizeObserver(() => this.refresh());
+      this.resizeObserver = new ResizeObserver(() => this.scheduleViewportGuard("resize-observer"));
       this.resizeObserver.observe(videoElement);
+      if (videoElement.parentElement) {
+        this.resizeObserver.observe(videoElement.parentElement);
+      }
     } else {
       window.addEventListener("resize", this.onWindowResize);
     }
     videoElement.addEventListener("resize", this.onVideoResize);
-    this.refresh();
+    videoElement.addEventListener("loadedmetadata", this.onLoadedMetadata);
+    document.addEventListener("fullscreenchange", this.onFullscreenChange);
+    document.addEventListener("pointerlockchange", this.onPointerLockChange);
+    window.visualViewport?.addEventListener("resize", this.onWindowResize);
+    this.refresh("initial");
   }
 
   public dispose(): void {
     this.imageLoadGeneration++;
     this.resizeObserver?.disconnect();
+    if (this.viewportGuardRaf !== null) window.cancelAnimationFrame(this.viewportGuardRaf);
+    if (this.viewportGuardTimer !== null) window.clearTimeout(this.viewportGuardTimer);
     window.removeEventListener("resize", this.onWindowResize);
+    window.visualViewport?.removeEventListener("resize", this.onWindowResize);
     this.videoElement.removeEventListener("resize", this.onVideoResize);
+    this.videoElement.removeEventListener("loadedmetadata", this.onLoadedMetadata);
+    document.removeEventListener("fullscreenchange", this.onFullscreenChange);
+    document.removeEventListener("pointerlockchange", this.onPointerLockChange);
     this.videoElement.style.cursor = this.originalCursor;
     this.canvas.remove();
   }
 
   public setFallbackResolution(resolution: { width: number; height: number } | null): void {
     this.fallbackResolution = resolution;
-    this.refresh();
+    this.scheduleViewportGuard("stream-resolution");
   }
 
   public setPointerLocked(active: boolean): void {
@@ -265,6 +325,24 @@ export class GfnCursorOverlayController {
     }
     this.pointerLocked = active;
     this.applyCursorVisibility();
+    this.scheduleViewportGuard(active ? "pointer-lock-enter" : "pointer-lock-exit");
+  }
+
+  public getViewportDiagnostics(): CursorViewportDiagnostics {
+    const snapshot = this.lastViewportSnapshot ?? this.getViewportSnapshot();
+    return {
+      visible: this.cursorVisible,
+      pointerLocked: this.pointerLocked,
+      viewportWidth: snapshot.viewport.width,
+      viewportHeight: snapshot.viewport.height,
+      videoRectWidth: snapshot.videoRectWidth,
+      videoRectHeight: snapshot.videoRectHeight,
+      sourceWidth: snapshot.sourceWidth,
+      sourceHeight: snapshot.sourceHeight,
+      devicePixelRatio: snapshot.devicePixelRatio,
+      resyncCount: this.viewportResyncCount,
+      lastResyncReason: this.lastViewportResyncReason,
+    };
   }
 
   public handleMessage(bytes: Uint8Array): boolean {
@@ -357,15 +435,45 @@ export class GfnCursorOverlayController {
     this.positionCanvas(viewport);
   }
 
-  public refresh(): void {
-    const viewport = this.getViewport();
+  public refresh(reason = "manual"): void {
+    const snapshot = this.getViewportSnapshot();
+    const viewport = snapshot.viewport;
+    const previous = this.lastViewportSnapshot;
+    const viewportChanged = previous !== null && (
+      Math.abs(previous.viewport.width - viewport.width) >= 0.5
+      || Math.abs(previous.viewport.height - viewport.height) >= 0.5
+      || Math.abs(previous.viewport.originX - viewport.originX) >= 0.5
+      || Math.abs(previous.viewport.originY - viewport.originY) >= 0.5
+      || previous.sourceWidth !== snapshot.sourceWidth
+      || previous.sourceHeight !== snapshot.sourceHeight
+      || previous.devicePixelRatio !== snapshot.devicePixelRatio
+    );
     if (!this.positionInitialized) {
       this.positionX = viewport.width / 2;
       this.positionY = viewport.height / 2;
       this.positionInitialized = true;
+    } else if (previous && viewportChanged) {
+      const remapped = remapCursorPositionForViewport(
+        { x: this.positionX, y: this.positionY },
+        previous.viewport,
+        viewport,
+      );
+      this.positionX = remapped.x;
+      this.positionY = remapped.y;
     } else {
       this.positionX = Math.max(0, Math.min(viewport.width, this.positionX));
       this.positionY = Math.max(0, Math.min(viewport.height, this.positionY));
+    }
+    this.lastViewportSnapshot = snapshot;
+    if (viewportChanged) {
+      this.viewportResyncCount++;
+      this.lastViewportResyncReason = reason;
+      this.log(
+        `[CursorViewportGuard] ${reason}: viewport=${viewport.width.toFixed(1)}x${viewport.height.toFixed(1)}`
+        + ` origin=${viewport.originX.toFixed(1)},${viewport.originY.toFixed(1)}`
+        + ` video=${snapshot.videoRectWidth.toFixed(1)}x${snapshot.videoRectHeight.toFixed(1)}`
+        + ` source=${snapshot.sourceWidth}x${snapshot.sourceHeight} dpr=${snapshot.devicePixelRatio.toFixed(2)}`,
+      );
     }
     this.rasterizeCurrentCursor();
     this.positionCanvas(viewport);
@@ -428,7 +536,25 @@ export class GfnCursorOverlayController {
     }
   }
 
+  private scheduleViewportGuard(reason: string): void {
+    this.refresh(reason);
+    if (this.viewportGuardRaf !== null) window.cancelAnimationFrame(this.viewportGuardRaf);
+    if (this.viewportGuardTimer !== null) window.clearTimeout(this.viewportGuardTimer);
+    this.viewportGuardRaf = window.requestAnimationFrame(() => {
+      this.viewportGuardRaf = null;
+      this.refresh(`${reason}-raf`);
+    });
+    this.viewportGuardTimer = window.setTimeout(() => {
+      this.viewportGuardTimer = null;
+      this.refresh(`${reason}-settled`);
+    }, 120);
+  }
+
   private getViewport(): StreamViewport {
+    return this.getViewportSnapshot().viewport;
+  }
+
+  private getViewportSnapshot(): StreamViewportSnapshot {
     const rect = this.videoElement.getBoundingClientRect();
     const parentRect = this.videoElement.parentElement?.getBoundingClientRect() ?? new DOMRect(0, 0, 0, 0);
     const clientWidth = rect.width || this.videoElement.clientWidth || this.fallbackResolution?.width || 1;
@@ -455,10 +581,17 @@ export class GfnCursorOverlayController {
     }
 
     return {
-      originX: rect.left - parentRect.left + offsetX,
-      originY: rect.top - parentRect.top + offsetY,
-      width: Math.max(1, width),
-      height: Math.max(1, height),
+      viewport: {
+        originX: rect.left - parentRect.left + offsetX,
+        originY: rect.top - parentRect.top + offsetY,
+        width: Math.max(1, width),
+        height: Math.max(1, height),
+      },
+      videoRectWidth: rect.width,
+      videoRectHeight: rect.height,
+      sourceWidth: safeSourceWidth,
+      sourceHeight: safeSourceHeight,
+      devicePixelRatio: window.devicePixelRatio || 1,
     };
   }
 

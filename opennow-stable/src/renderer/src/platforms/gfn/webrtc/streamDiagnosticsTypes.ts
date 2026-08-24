@@ -65,6 +65,17 @@ export interface StreamDiagnostics {
   mousePacketsPerSecond: number;
   mouseResidualMagnitude: number;
   mouseAdaptiveFlushActive: boolean;
+  cursorOverlayVisible: boolean;
+  cursorPointerLocked: boolean;
+  cursorViewportWidth: number;
+  cursorViewportHeight: number;
+  cursorVideoRectWidth: number;
+  cursorVideoRectHeight: number;
+  cursorSourceWidth: number;
+  cursorSourceHeight: number;
+  cursorDevicePixelRatio: number;
+  cursorViewportResyncCount: number;
+  cursorViewportLastResyncReason: string;
 
   lagReason: StreamLagReason;
   lagReasonDetail: string;

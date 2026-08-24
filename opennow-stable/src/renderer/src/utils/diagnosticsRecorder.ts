@@ -70,7 +70,7 @@ export class StreamDiagnosticsRecorder {
   exportReport(generatedAtMs = Date.now()): Record<string, unknown> {
     const finishedAt = this.samples.at(-1)?.timestamp ?? new Date(generatedAtMs).toISOString();
     return {
-      schemaVersion: 3,
+      schemaVersion: 4,
       generatedAt: new Date(generatedAtMs).toISOString(),
       captureStartedAt: new Date(this.startedAtMs).toISOString(),
       captureFinishedAt: finishedAt,
@@ -79,6 +79,7 @@ export class StreamDiagnosticsRecorder {
         "Samples are captured once per second even when the statistics overlay is closed.",
         "streamIdentifier is a local alias; the NVIDIA session identifier is not exported.",
         "availableBitrateKbps is browser-estimated and may be unavailable or inaccurate.",
+        "Cursor Viewport Guard events record CSS viewport, source resolution, and DPI resynchronization.",
         "NETWORK_STALL and RENDER_STALL are diagnostic classifications, not proof of a single root cause.",
       ],
       summary: this.buildSummary(),
@@ -114,6 +115,18 @@ export class StreamDiagnosticsRecorder {
         this.pushEvent(nowMs, "WEBRTC_FREEZE_REPORTED", "Browser inbound-video freeze counters increased", {
           freezeCount: stats.freezeCount,
           totalFreezesDurationMs: stats.totalFreezesDurationMs,
+        });
+      }
+      if (stats.cursorViewportResyncCount > previous.cursorViewportResyncCount) {
+        this.pushEvent(nowMs, "CURSOR_VIEWPORT_RESYNC", stats.cursorViewportLastResyncReason, {
+          viewportWidth: round(stats.cursorViewportWidth, 1),
+          viewportHeight: round(stats.cursorViewportHeight, 1),
+          videoRectWidth: round(stats.cursorVideoRectWidth, 1),
+          videoRectHeight: round(stats.cursorVideoRectHeight, 1),
+          sourceWidth: stats.cursorSourceWidth,
+          sourceHeight: stats.cursorSourceHeight,
+          devicePixelRatio: round(stats.cursorDevicePixelRatio, 2),
+          pointerLocked: stats.cursorPointerLocked,
         });
       }
       this.recordCounterIncrease(nowMs, "KEYFRAME_DECODED", "keyFramesDecoded", previous.keyFramesDecoded, stats.keyFramesDecoded);

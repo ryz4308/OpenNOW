@@ -42,6 +42,16 @@ test("records network and renderer incidents without exposing the raw session id
     nackCount: 8,
     pliCount: 1,
     dataChannels: ["control", "input"],
+    cursorViewportResyncCount: 1,
+    cursorViewportLastResyncReason: "fullscreen-change-settled",
+    cursorViewportWidth: 1920,
+    cursorViewportHeight: 1080,
+    cursorVideoRectWidth: 1920,
+    cursorVideoRectHeight: 1080,
+    cursorSourceWidth: 1280,
+    cursorSourceHeight: 720,
+    cursorDevicePixelRatio: 1,
+    cursorPointerLocked: true,
   }, startedAt + 1_100);
   recorder.record({
     ...defaultDiagnostics(),
@@ -83,6 +93,8 @@ test("records network and renderer incidents without exposing the raw session id
   assert.equal(events.filter((event) => event.type === "RECOVERY_NOTICED").length, 2);
   assert.equal(events.some((event) => event.type === "NACK_INCREASED"), true);
   assert.equal(events.some((event) => event.type === "PLI_INCREASED"), true);
+  assert.equal(events.some((event) => event.type === "CURSOR_VIEWPORT_RESYNC"), true);
+  assert.equal(report.schemaVersion, 4);
 
   const summary = report.summary as {
     sampleCount: number;

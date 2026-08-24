@@ -208,12 +208,13 @@ test("buildNvstSdp applies the experimental resilient network profile", () => {
     resilientNetworkProfile: true,
   });
   assert.deepEqual(profile, {
-    maxBitrateKbps: 14000,
+    maxBitrateKbps: 13000,
     startupBitrateKbps: 4000,
-    fecRateDropWindow: 6,
+    fecRateDropWindow: 3,
     fecRepairMinPercent: 8,
     fecRepairPercent: 10,
     fecRepairMaxPercent: 40,
+    bitrateIirFilterFactor: 8,
   });
 
   const sdp = buildNvstSdp({
@@ -235,11 +236,12 @@ test("buildNvstSdp applies the experimental resilient network profile", () => {
   for (const line of [
     "a=video.initialBitrateKbps:4000",
     "a=video.initialPeakBitrateKbps:4000",
-    "a=vqos.bw.maximumBitrateKbps:14000",
-    "a=vqos.fec.rateDropWindow:6",
+    "a=vqos.bw.maximumBitrateKbps:13000",
+    "a=vqos.fec.rateDropWindow:3",
     "a=vqos.fec.repairMinPercent:8",
     "a=vqos.fec.repairPercent:10",
     "a=vqos.fec.repairMaxPercent:40",
+    "a=vqos.drc.bitrateIirFilterFactor:8",
   ]) {
     assert.equal(lines.has(line), true, `missing resilient SDP line: ${line}`);
   }
