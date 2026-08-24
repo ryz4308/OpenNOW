@@ -66,6 +66,7 @@ import { deriveStreamSessionDiagnostics } from "./webrtc/sessionDiagnostics";
 import {
   DecoderPressureController,
 } from "./webrtc/decoderPressureController";
+import { NetworkRecoveryController } from "./webrtc/networkRecoveryController";
 import {
   InputChannelPolicyController,
   type RiInputCapabilities,
@@ -339,6 +340,9 @@ export class GfnWebRtcClient {
     framesDropped: number;
     packetsReceived: number;
     packetsLost: number;
+    nackCount: number;
+    pliCount: number;
+    freezeCount: number;
     totalDecodeTime: number;
     atMs: number;
   } | null = null;
@@ -366,7 +370,7 @@ export class GfnWebRtcClient {
   private inputQueueDropCount = 0;
 
   private readonly decoderPressureController: DecoderPressureController;
-  private resilientProfileTargetBitrateKbps = 0;
+  private readonly networkRecoveryController: NetworkRecoveryController;
   private readonly inputChannelPolicyController: InputChannelPolicyController;
   private readonly gamepadController: GamepadController;
   private readonly domInputController: DomInputCaptureController;
@@ -492,6 +496,39 @@ export class GfnWebRtcClient {
         this.diagnostics.decoderPressureActive = state.active;
         this.diagnostics.decoderRecoveryAttempts = state.recoveryAttempts;
         this.diagnostics.decoderRecoveryAction = state.recoveryAction;
+      },
+    });
+    this.networkRecoveryController = new NetworkRecoveryController({
+      log: (message) => this.log(message),
+      setMaxBitrateKbps: (kbps) => this.setMaxBitrateKbps(kbps),
+      setReceiverBufferTargetMs: (targetMs) => {
+        this.decoderPressureController.setNetworkRecoveryBufferTargetMs(targetMs);
+      },
+      requestPostBurstKeyframe: async (reason) => {
+        try {
+          await window.openNow.requestKeyframe({
+            reason: `network_${reason}`,
+            backlogFrames: 0,
+            attempt: 1,
+          });
+          return true;
+        } catch (error) {
+          this.log(`Post-burst signaling keyframe failed (non-fatal): ${String(error)}`);
+          return false;
+        }
+      },
+      onStateChange: (state) => {
+        this.diagnostics.networkRecoveryEnabled = state.enabled;
+        this.diagnostics.networkRecoveryActive = state.active;
+        this.diagnostics.networkRecoveryAttempts = state.recoveryAttempts;
+        this.diagnostics.networkRecoveryAction = [
+          state.phase,
+          state.recoveryAction,
+          state.reason,
+          `buffer=${state.bufferTargetMs === null ? "adaptive" : `${state.bufferTargetMs}ms`}`,
+          `liveBitrate=${state.liveBitrateUpdateSupported ?? "unknown"}`,
+        ].join(":");
+        this.diagnostics.networkRecoveryTargetBitrateKbps = state.targetBitrateKbps;
       },
     });
     this.inputChannelPolicyController = new InputChannelPolicyController(
@@ -853,7 +890,7 @@ export class GfnWebRtcClient {
     this.videoDecodeStallWarningSent = false;
     this.statsChannelVersionLogged = false;
     this.decoderPressureController.reset();
-    this.resilientProfileTargetBitrateKbps = 0;
+    this.networkRecoveryController.reset();
     const mouseDiagnostics = this.domInputController.getMouseDiagnostics();
     this.diagnostics = {
       connectionState: this.pc?.connectionState ?? "closed",
@@ -972,12 +1009,10 @@ export class GfnWebRtcClient {
     this.currentResolution = settings.resolution;
     this.isHdr = settings.colorQuality.startsWith("10bit");
     this.decoderPressureController.initializeBitrate(settings.maxBitrateKbps);
-    const resilientProfile = resolveNvstQualityProfile({
-      maxBitrateKbps: settings.maxBitrateKbps,
-      resilientNetworkProfile: this.options.autoRecoveryBitrate === true && !nativeRendererActive,
-    });
-    this.resilientProfileTargetBitrateKbps = resilientProfile.maxBitrateKbps;
-
+    this.networkRecoveryController.initializeBitrate(settings.maxBitrateKbps);
+    this.networkRecoveryController.setEnabled(
+      this.options.autoRecoveryBitrate === true && !nativeRendererActive,
+    );
     this.diagnostics.resolution = settings.resolution;
     this.diagnostics.codec = codec;
     this.diagnostics.requestedCodec = codec;
@@ -988,15 +1023,10 @@ export class GfnWebRtcClient {
     this.diagnostics.isHdr = this.isHdr;
     this.diagnostics.targetBitrateKbps = Math.min(
       this.decoderPressureController.targetBitrateKbps,
-      resilientProfile.maxBitrateKbps,
+      this.networkRecoveryController.targetBitrateKbps,
     );
-    this.diagnostics.networkRecoveryEnabled = this.options.autoRecoveryBitrate === true && !nativeRendererActive;
-    this.diagnostics.networkRecoveryActive = this.diagnostics.networkRecoveryEnabled;
-    this.diagnostics.networkRecoveryAttempts = 0;
-    this.diagnostics.networkRecoveryAction = this.diagnostics.networkRecoveryEnabled
-      ? "Fast Burst Recovery SDP applied"
-      : "none";
-    this.diagnostics.networkRecoveryTargetBitrateKbps = resilientProfile.maxBitrateKbps;
+    this.diagnostics.networkRecoveryTargetBitrateKbps =
+      this.networkRecoveryController.targetBitrateKbps;
     this.diagnostics.decodeFps = nativeRendererActive ? settings.fps : 0;
     this.diagnostics.receiveFps = 0;
     this.diagnostics.renderFps = nativeRendererActive ? settings.fps : 0;
@@ -1086,6 +1116,10 @@ export class GfnWebRtcClient {
     let framesReceived = 0;
     let framesDecoded = 0;
     let framesDropped = 0;
+    let hasInboundVideoSample = false;
+    let nackDelta = 0;
+    let pliDelta = 0;
+    let freezeDelta = 0;
     let pressureSignal = {
       active: false,
       reason: "stable",
@@ -1122,12 +1156,16 @@ export class GfnWebRtcClient {
 
     // Process video track stats
     if (inboundVideo) {
+      hasInboundVideoSample = true;
       const bytes = Number(inboundVideo.bytesReceived ?? 0);
       framesReceived = Number(inboundVideo.framesReceived ?? 0);
       framesDecoded = Number(inboundVideo.framesDecoded ?? 0);
       framesDropped = Number(inboundVideo.framesDropped ?? 0);
       const packetsReceived = Number(inboundVideo.packetsReceived ?? 0);
       const packetsLost = Number(inboundVideo.packetsLost ?? 0);
+      const nackCount = Number(inboundVideo.nackCount ?? 0);
+      const pliCount = Number(inboundVideo.pliCount ?? 0);
+      const freezeCount = Number(inboundVideo.freezeCount ?? 0);
       const totalDecodeTime = Number(inboundVideo.totalDecodeTime ?? 0);
       const prevSample = this.lastStatsSample;
 
@@ -1165,6 +1203,9 @@ export class GfnWebRtcClient {
             ? (lostDelta / totalPackets) * 100
             : 0;
         }
+        nackDelta = Math.max(0, nackCount - prevSample.nackCount);
+        pliDelta = Math.max(0, pliCount - prevSample.pliCount);
+        freezeDelta = Math.max(0, freezeCount - prevSample.freezeCount);
       }
 
       // Store current values for next delta calculation
@@ -1175,6 +1216,9 @@ export class GfnWebRtcClient {
         framesDropped,
         packetsReceived,
         packetsLost,
+        nackCount,
+        pliCount,
+        freezeCount,
         totalDecodeTime,
         atMs: now,
       };
@@ -1184,10 +1228,10 @@ export class GfnWebRtcClient {
       this.diagnostics.framesDecoded = framesDecoded;
       this.diagnostics.framesDropped = framesDropped;
       this.diagnostics.keyFramesDecoded = Number(inboundVideo.keyFramesDecoded ?? 0);
-      this.diagnostics.nackCount = Number(inboundVideo.nackCount ?? 0);
-      this.diagnostics.pliCount = Number(inboundVideo.pliCount ?? 0);
+      this.diagnostics.nackCount = nackCount;
+      this.diagnostics.pliCount = pliCount;
       this.diagnostics.firCount = Number(inboundVideo.firCount ?? 0);
-      this.diagnostics.freezeCount = Number(inboundVideo.freezeCount ?? 0);
+      this.diagnostics.freezeCount = freezeCount;
       this.diagnostics.totalFreezesDurationMs = Math.round(
         Number(inboundVideo.totalFreezesDuration ?? 0) * 1000,
       );
@@ -1273,7 +1317,6 @@ export class GfnWebRtcClient {
         decodeFps: this.diagnostics.decodeFps,
         prevSample,
       });
-      await this.decoderPressureController.recover(pressureSignal);
     }
 
     // RTT from active candidate pair
@@ -1282,9 +1325,26 @@ export class GfnWebRtcClient {
       this.diagnostics.rttMs = Math.round(rtt * 1000 * 10) / 10;
     }
 
+    if (hasInboundVideoSample) {
+      await this.networkRecoveryController.recover({
+        packetLossPercent: this.diagnostics.packetLossPercent,
+        rttMs: this.diagnostics.rttMs,
+        jitterMs: this.diagnostics.jitterMs,
+        receiveFps: this.diagnostics.receiveFps,
+        decodeFps: this.diagnostics.decodeFps,
+        nackDelta,
+        pliDelta,
+        freezeDelta,
+      });
+      this.decoderPressureController.setNetworkRecoveryGuardActive(
+        this.networkRecoveryController.currentPhase !== "stable",
+      );
+      await this.decoderPressureController.recover(pressureSignal);
+    }
+
     const effectiveTargetBitrateKbps = Math.min(
       this.decoderPressureController.targetBitrateKbps,
-      this.resilientProfileTargetBitrateKbps || this.decoderPressureController.targetBitrateKbps,
+      this.networkRecoveryController.targetBitrateKbps,
     );
     const bitrateDiagnostics = computeBitrateDiagnostics(
       effectiveTargetBitrateKbps,
@@ -1293,7 +1353,7 @@ export class GfnWebRtcClient {
     this.diagnostics.targetBitrateKbps = bitrateDiagnostics.targetBitrateKbps;
     this.diagnostics.availableBitrateKbps = bitrateDiagnostics.availableBitrateKbps;
     this.diagnostics.networkRecoveryTargetBitrateKbps =
-      this.resilientProfileTargetBitrateKbps || this.decoderPressureController.targetBitrateKbps;
+      this.networkRecoveryController.targetBitrateKbps;
 
     const reliableBufferedAmount = this.reliableInputChannel?.bufferedAmount ?? 0;
     const partiallyReliableBufferedAmount = this.partiallyReliableInputChannel?.bufferedAmount ?? 0;
@@ -2431,7 +2491,7 @@ export class GfnWebRtcClient {
 
     if (this.options.autoRecoveryBitrate === true) {
       this.log(
-        `Fast Burst Recovery SDP: requestedMax=${settings.maxBitrateKbps}kbps, negotiatedMax=${qualityProfile.maxBitrateKbps}kbps, startup=${qualityProfile.startupBitrateKbps}kbps, rateDropWindow=${qualityProfile.fecRateDropWindow}, bitrateIir=${qualityProfile.bitrateIirFilterFactor}, FEC=${qualityProfile.fecRepairMinPercent}/${qualityProfile.fecRepairPercent}/${qualityProfile.fecRepairMaxPercent}%`,
+        `Adaptive Burst Recovery v3 SDP: requestedMax=${settings.maxBitrateKbps}kbps, negotiatedMax=${qualityProfile.maxBitrateKbps}kbps, startup=${qualityProfile.startupBitrateKbps}kbps, rateDropWindow=${qualityProfile.fecRateDropWindow}, bitrateIir=${qualityProfile.bitrateIirFilterFactor}, FEC=${qualityProfile.fecRepairMinPercent}/${qualityProfile.fecRepairPercent}/${qualityProfile.fecRepairMaxPercent}%`,
       );
     }
 

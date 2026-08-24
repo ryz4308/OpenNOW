@@ -121,6 +121,47 @@ test("decoder recovery preserves bitrate state when no wire update is applied", 
   );
 });
 
+test("network buffer overrides decoder latency and suppresses mid-burst keyframes", async () => {
+  let keyframeRequests = 0;
+  let now = 2_000;
+  const receiver = {
+    jitterBufferTarget: null,
+    playoutDelayHint: null,
+    track: { contentHint: "" },
+  } as unknown as RTCRtpReceiver;
+  const controller = new DecoderPressureController({
+    log: () => {},
+    getPeerConnection: () => null,
+    getControlChannel: () => null,
+    requestSignalingKeyframe: async () => {
+      keyframeRequests++;
+    },
+    setMaxBitrateKbps: async () => true,
+    onStateChange: () => {},
+    now: () => now,
+  });
+  controller.configureReceiver(receiver, "video");
+  controller.setNetworkRecoveryBufferTargetMs(110);
+  assert.equal((receiver as unknown as { jitterBufferTarget: number | null }).jitterBufferTarget, 110);
+
+  controller.setNetworkRecoveryGuardActive(true);
+  await controller.recover(pressureSignal);
+  await controller.recover(pressureSignal);
+  await controller.recover(pressureSignal);
+  assert.equal(keyframeRequests, 0);
+
+  controller.setNetworkRecoveryBufferTargetMs(45);
+  assert.equal((receiver as unknown as { jitterBufferTarget: number | null }).jitterBufferTarget, 45);
+  controller.setNetworkRecoveryGuardActive(false);
+  now += 2_000;
+  await controller.recover(pressureSignal);
+  assert.equal(keyframeRequests, 1);
+
+  controller.setNetworkRecoveryBufferTargetMs(null);
+  // Decoder pressure is still active, so its smaller 30ms target remains.
+  assert.equal((receiver as unknown as { jitterBufferTarget: number | null }).jitterBufferTarget, 30);
+});
+
 test("network recovery classifies critical packet loss as a low bitrate target", () => {
   const decision = classifyNetworkRecoverySample({
     packetLossPercent: 12,
@@ -132,6 +173,7 @@ test("network recovery classifies critical packet loss as a low bitrate target",
 
   assert.deepEqual(decision, {
     active: true,
+    phase: "burst",
     reason: "critical_loss",
     desiredBitrateKbps: 5_000,
   });
@@ -148,19 +190,27 @@ test("network recovery does not downshift from low stream fps alone", () => {
 
   assert.deepEqual(decision, {
     active: false,
+    phase: "stable",
     reason: "stable",
     desiredBitrateKbps: 20_000,
   });
 });
 
-test("network recovery steps bitrate down under repeated loss and slowly restores it", async () => {
+test("network recovery raises the buffer during a burst and requests one keyframe after it", async () => {
   const states: NetworkRecoveryState[] = [];
   const requestedBitrates: number[] = [];
+  const bufferTargets: Array<number | null> = [];
+  const keyframeReasons: string[] = [];
   let now = 10_000;
   const controller = new NetworkRecoveryController({
     log: () => {},
     setMaxBitrateKbps: async (kbps) => {
       requestedBitrates.push(kbps);
+      return true;
+    },
+    setReceiverBufferTargetMs: (target) => bufferTargets.push(target),
+    requestPostBurstKeyframe: async (reason) => {
+      keyframeReasons.push(reason);
       return true;
     },
     onStateChange: (state) => states.push(state),
@@ -179,19 +229,26 @@ test("network recovery steps bitrate down under repeated loss and slowly restore
 
   await controller.recover(lossySample);
   assert.deepEqual(requestedBitrates, []);
+  assert.equal(states.at(-1)?.phase, "burst");
+  assert.equal(states.at(-1)?.bufferTargetMs, 110);
 
   now += 3_000;
   await controller.recover(lossySample);
   assert.deepEqual(requestedBitrates, [5_000]);
-  assert.deepEqual(states.at(-1), {
-    enabled: true,
-    active: true,
-    recoveryAttempts: 1,
-    recoveryAction: "bitrate_step_down",
-    targetBitrateKbps: 5_000,
-  });
+  assert.equal(states.at(-1)?.recoveryAction, "bitrate_step_down");
+  assert.equal(states.at(-1)?.targetBitrateKbps, 5_000);
 
-  now += 31_000;
+  now += 1_000;
+  await controller.recover({
+    packetLossPercent: 1,
+    rttMs: 60,
+    jitterMs: 4,
+    receiveFps: 58,
+    decodeFps: 58,
+  });
+  assert.equal(states.at(-1)?.phase, "burst");
+  assert.deepEqual(keyframeReasons, []);
+
   const stableSample = {
     packetLossPercent: 0,
     rttMs: 48,
@@ -199,21 +256,24 @@ test("network recovery steps bitrate down under repeated loss and slowly restore
     receiveFps: 60,
     decodeFps: 60,
   };
-  for (let index = 0; index < 20; index++) {
-    await controller.recover(stableSample);
-  }
+  now += 1_000;
+  await controller.recover(stableSample);
+  now += 1_000;
+  await controller.recover(stableSample);
+  assert.equal(states.at(-1)?.phase, "recovering");
+  assert.equal(states.at(-1)?.bufferTargetMs, 45);
+  assert.equal(states.at(-1)?.recoveryAction, "post_burst_keyframe");
+  assert.deepEqual(keyframeReasons, ["post_burst_stable"]);
 
+  now += 11_000;
+  for (let index = 0; index < 7; index++) await controller.recover(stableSample);
+  assert.equal(states.at(-1)?.phase, "stable");
+  assert.equal(states.at(-1)?.bufferTargetMs, null);
   assert.deepEqual(requestedBitrates, [5_000, 6_000]);
-  assert.deepEqual(states.at(-1), {
-    enabled: true,
-    active: true,
-    recoveryAttempts: 1,
-    recoveryAction: "bitrate_step_up",
-    targetBitrateKbps: 6_000,
-  });
+  assert.deepEqual(bufferTargets, [null, 110, 45, null]);
 });
 
-test("network recovery reports unavailable when live bitrate update is not supported", async () => {
+test("network recovery reports live bitrate unavailable once and suppresses false retries", async () => {
   const states: NetworkRecoveryState[] = [];
   const requestedBitrates: number[] = [];
   let now = 10_000;
@@ -223,6 +283,8 @@ test("network recovery reports unavailable when live bitrate update is not suppo
       requestedBitrates.push(kbps);
       return false;
     },
+    setReceiverBufferTargetMs: () => {},
+    requestPostBurstKeyframe: async () => false,
     onStateChange: (state) => states.push(state),
     now: () => now,
   });
@@ -244,15 +306,21 @@ test("network recovery reports unavailable when live bitrate update is not suppo
     receiveFps: 60,
     decodeFps: 60,
   });
+  now += 3_000;
+  await controller.recover({
+    packetLossPercent: 0,
+    rttMs: 220,
+    jitterMs: 5,
+    receiveFps: 60,
+    decodeFps: 60,
+  });
 
   assert.deepEqual(requestedBitrates, [5_000]);
-  assert.deepEqual(states.at(-1), {
-    enabled: true,
-    active: true,
-    recoveryAttempts: 0,
-    recoveryAction: "unavailable",
-    targetBitrateKbps: 20_000,
-  });
+  assert.equal(states.at(-1)?.phase, "burst");
+  assert.equal(states.at(-1)?.recoveryAttempts, 0);
+  assert.equal(states.at(-1)?.recoveryAction, "unavailable");
+  assert.equal(states.at(-1)?.targetBitrateKbps, 20_000);
+  assert.equal(states.at(-1)?.liveBitrateUpdateSupported, false);
 });
 
 test("input policy preserves native, partially-reliable, and fallback routes", () => {

@@ -109,7 +109,12 @@ export class DecoderPressureController {
   private negotiatedMaxBitrateKbps = 0;
   private currentBitrateCeilingKbps = 0;
   private recoveryAction: DecoderRecoveryAction = "none";
-  private readonly receiverLatencyTargets: Record<"video" | "audio", number | null> = {
+  private networkRecoveryGuardActive = false;
+  private readonly decoderLatencyTargets: Record<"video" | "audio", number | null> = {
+    video: null,
+    audio: null,
+  };
+  private readonly networkLatencyTargets: Record<"video" | "audio", number | null> = {
     video: null,
     audio: null,
   };
@@ -136,6 +141,34 @@ export class DecoderPressureController {
     return classifyDecoderPressureSample(sample);
   }
 
+  /**
+   * Network recovery owns the larger receiver buffer while a packet-loss burst
+   * is active. Decoder pressure may still request a smaller buffer, but the
+   * effective target is always the larger of the two.
+   */
+  setNetworkRecoveryBufferTargetMs(targetMs: number | null): void {
+    const normalized = targetMs === null
+      ? null
+      : Math.max(0, Math.min(500, Math.round(targetMs)));
+    if (
+      this.networkLatencyTargets.video === normalized
+      && this.networkLatencyTargets.audio === normalized
+    ) {
+      return;
+    }
+    this.networkLatencyTargets.video = normalized;
+    this.networkLatencyTargets.audio = normalized;
+    this.dependencies.log(
+      `Network receiver buffer target ${normalized === null ? "adaptive" : `${normalized}ms`}`,
+    );
+    this.reconfigureActiveReceivers();
+  }
+
+  /** Suppress decoder-triggered keyframes/bitrate changes during network recovery. */
+  setNetworkRecoveryGuardActive(active: boolean): void {
+    this.networkRecoveryGuardActive = active;
+  }
+
   configureReceiver(receiver: RTCRtpReceiver, kind: string): void {
     if (kind !== "video" && kind !== "audio") {
       return;
@@ -145,7 +178,7 @@ export class DecoderPressureController {
     }
 
     try {
-      const targetMs = this.receiverLatencyTargets[kind];
+      const targetMs = this.effectiveLatencyTarget(kind);
       const rawReceiver = receiver as unknown as Record<string, unknown>;
       if ("jitterBufferTarget" in receiver) {
         rawReceiver.jitterBufferTarget = targetMs;
@@ -180,8 +213,11 @@ export class DecoderPressureController {
     this.negotiatedMaxBitrateKbps = 0;
     this.currentBitrateCeilingKbps = 0;
     this.recoveryAction = "none";
-    this.receiverLatencyTargets.video = null;
-    this.receiverLatencyTargets.audio = null;
+    this.networkRecoveryGuardActive = false;
+    this.decoderLatencyTargets.video = null;
+    this.decoderLatencyTargets.audio = null;
+    this.networkLatencyTargets.video = null;
+    this.networkLatencyTargets.audio = null;
     this.activeReceivers = [];
     this.emitState();
   }
@@ -206,6 +242,12 @@ export class DecoderPressureController {
     }
 
     this.setPressureMode(true);
+    if (this.networkRecoveryGuardActive) {
+      // A keyframe requested while packets are still missing adds another
+      // large burst. The network controller requests exactly one keyframe once
+      // the path has produced consecutive stable samples again.
+      return;
+    }
     const now = this.dependencies.now?.() ?? performance.now();
     if (now - this.lastRecoveryAtMs < RECOVERY_COOLDOWN_MS) {
       return;
@@ -240,19 +282,29 @@ export class DecoderPressureController {
       return;
     }
     this.pressureActive = active;
-    this.receiverLatencyTargets.video = active
+    this.decoderLatencyTargets.video = active
       ? VIDEO_PRESSURE_JITTER_TARGET_MS
       : null;
-    this.receiverLatencyTargets.audio = active
+    this.decoderLatencyTargets.audio = active
       ? AUDIO_PRESSURE_JITTER_TARGET_MS
       : null;
     this.dependencies.log(
-      `Decoder pressure mode ${active ? "enabled" : "cleared"}; receiver targets video=${this.receiverLatencyTargets.video ?? "adaptive"} audio=${this.receiverLatencyTargets.audio ?? "adaptive"}`,
+      `Decoder pressure mode ${active ? "enabled" : "cleared"}; decoder targets video=${this.decoderLatencyTargets.video ?? "adaptive"} audio=${this.decoderLatencyTargets.audio ?? "adaptive"}`,
     );
+    this.reconfigureActiveReceivers();
+    this.emitState();
+  }
+
+  private effectiveLatencyTarget(kind: "video" | "audio"): number | null {
+    const targets = [this.decoderLatencyTargets[kind], this.networkLatencyTargets[kind]]
+      .filter((target): target is number => target !== null);
+    return targets.length > 0 ? Math.max(...targets) : null;
+  }
+
+  private reconfigureActiveReceivers(): void {
     for (const { receiver, kind } of this.activeReceivers) {
       this.configureReceiver(receiver, kind);
     }
-    this.emitState();
   }
 
   private async requestKeyframe(

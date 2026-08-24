@@ -1,6 +1,6 @@
-name: Resilience v2 test build
+name: Adaptive Burst Recovery v3 build
 
-# Custom diagnostic build: Fast Burst Recovery, Cursor Viewport Guard,
+# Custom diagnostic build: Adaptive Burst Recovery v3, Cursor Viewport Guard,
 # calibrated queue ETA, and diagnostics export v4.
 
 on:
@@ -69,12 +69,12 @@ jobs:
         run: |
           $source = Get-ChildItem dist-release\*-portable-x64.exe | Select-Object -First 1
           if (-not $source) { throw "Portable executable was not produced." }
-          Copy-Item $source.FullName dist-release\OpenNOW-resilience-v2-portable-x64.exe
+          Copy-Item $source.FullName dist-release\OpenNOW-adaptive-burst-recovery-v3-portable-x64.exe
 
       - name: Upload portable executable
         uses: actions/upload-artifact@v4
         with:
-          name: OpenNOW-resilience-v2-windows-x64
-          path: opennow-stable/dist-release/OpenNOW-resilience-v2-portable-x64.exe
+          name: OpenNOW-adaptive-burst-recovery-v3-windows-x64
+          path: opennow-stable/dist-release/OpenNOW-adaptive-burst-recovery-v3-portable-x64.exe
           if-no-files-found: error
           retention-days: 14

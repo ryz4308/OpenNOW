@@ -49,11 +49,11 @@ export interface NvstQualityProfile {
 /**
  * Resolve the bitrate/FEC envelope sent to NVIDIA in nvstSdp.
  *
- * The resilient profile deliberately leaves headroom below the user's cap so
- * short Wi-Fi bursts do not immediately overflow the path. It also starts at
- * the official 4 Mbps floor and asks the server for moderately stronger FEC.
- * This is applied before session creation; Chromium cannot change the bitrate
- * of the receiver-only video stream through RTCRtpSender.setParameters().
+ * The resilient profile keeps the user's selected ceiling instead of applying
+ * a permanent quality penalty. It starts at the official 4 Mbps floor and
+ * keeps the faster server-side drop/ramp filters. FEC stays at the official
+ * web values: increasing repair traffic during a congested Wi-Fi burst can
+ * amplify the outage. Runtime buffering is handled by the WebRTC controller.
  */
 export function resolveNvstQualityProfile(params: Pick<NvstParams, "maxBitrateKbps" | "resilientNetworkProfile">): NvstQualityProfile {
   const requestedMax = Math.max(OFFICIAL_MIN_BITRATE_KBPS, Math.floor(params.maxBitrateKbps));
@@ -69,20 +69,15 @@ export function resolveNvstQualityProfile(params: Pick<NvstParams, "maxBitrateKb
     };
   }
 
-  const maxBitrateKbps = Math.max(
-    OFFICIAL_MIN_BITRATE_KBPS,
-    Math.floor(requestedMax * 0.65),
-  );
   return {
-    maxBitrateKbps,
+    maxBitrateKbps: requestedMax,
     startupBitrateKbps: OFFICIAL_MIN_BITRATE_KBPS,
-    // Fast Burst Recovery: react to a short burst in roughly half the old
-    // observation window, while retaining enough headroom that the server's
-    // recovery ramp does not immediately refill the Wi-Fi path.
+    // React to a short burst earlier, then let the receiver-side state machine
+    // provide temporary jitter headroom while the path recovers.
     fecRateDropWindow: 3,
-    fecRepairMinPercent: 8,
-    fecRepairPercent: 10,
-    fecRepairMaxPercent: 40,
+    fecRepairMinPercent: 5,
+    fecRepairPercent: 5,
+    fecRepairMaxPercent: 35,
     bitrateIirFilterFactor: 8,
   };
 }
