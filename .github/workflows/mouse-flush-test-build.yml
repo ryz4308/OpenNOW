@@ -1,4 +1,4 @@
-name: Resilience v3 test build
+name: Resilience v4 interface-safe build
 
 # Custom diagnostic build: Fast Burst Recovery, absolute pointer guard,
 # compositor-safe presentation, smooth playout buffering, queue ETA,
@@ -66,20 +66,26 @@ jobs:
       - name: Build Electron app
         run: npm run build
 
+      - name: Verify complete renderer CSS before packaging
+        run: node scripts/verify-packaged-styles.mjs dist/index.html
+
       - name: Package portable Windows test build
         run: npx electron-builder --publish never --win portable --x64
+
+      - name: Verify complete renderer CSS inside app.asar
+        run: node scripts/verify-packaged-styles.mjs dist-release/win-unpacked/resources/app.asar
 
       - name: Give the test executable an unmistakable name
         shell: pwsh
         run: |
           $source = Get-ChildItem dist-release\*-portable-x64.exe | Select-Object -First 1
           if (-not $source) { throw "Portable executable was not produced." }
-          Copy-Item $source.FullName dist-release\OpenNOW-resilience-v3-portable-x64.exe
+          Copy-Item $source.FullName dist-release\OpenNOW-resilience-v4-interface-restored-portable-x64.exe
 
       - name: Upload portable executable
         uses: actions/upload-artifact@v4
         with:
-          name: OpenNOW-resilience-v3-windows-x64
-          path: opennow-stable/dist-release/OpenNOW-resilience-v3-portable-x64.exe
+          name: OpenNOW-resilience-v4-interface-restored-windows-x64
+          path: opennow-stable/dist-release/OpenNOW-resilience-v4-interface-restored-portable-x64.exe
           if-no-files-found: error
           retention-days: 14
