@@ -3,7 +3,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildNvstSdp, resolveNvstQualityProfile } from "./nvstOffer";
+import {
+  buildNvstSdp,
+  resolveNvstPacketMicroburstProfile,
+  resolveNvstQualityProfile,
+} from "./nvstOffer";
 
 test("buildNvstSdp includes stream quality and partially reliable input parameters", () => {
   const sdp = buildNvstSdp({
@@ -255,5 +259,66 @@ test("buildNvstSdp applies current, balanced, and survival recovery profiles", (
     "a=vqos.dfc.adjustResAndFps:1",
   ]) {
     assert.equal(lines.has(line), true, `missing resilient SDP line: ${line}`);
+  }
+});
+
+test("packet microburst guard preserves Current and paces recovery profiles", () => {
+  const current = resolveNvstPacketMicroburstProfile({
+    fps: 60,
+    networkRecoveryProfile: "current",
+  });
+  const balanced = resolveNvstPacketMicroburstProfile({
+    fps: 60,
+    networkRecoveryProfile: "balanced",
+  });
+  const survival = resolveNvstPacketMicroburstProfile({
+    fps: 60,
+    networkRecoveryProfile: "survival",
+  });
+
+  assert.deepEqual(current, {
+    minNumPacketsPerGroup: 15,
+    numGroups: 5,
+    maxDelayUs: 1000,
+    minNumPacketsFrame: 10,
+    rtpNackQueueLength: 1024,
+    rtpNackQueueMaxPackets: 512,
+    rtpNackMaxPacketCount: 25,
+  });
+  assert.equal(balanced.minNumPacketsPerGroup, 9);
+  assert.equal(balanced.numGroups, 7);
+  assert.equal(balanced.maxDelayUs, 1800);
+  assert.equal(balanced.rtpNackMaxPacketCount, 16);
+  assert.equal(survival.minNumPacketsPerGroup, 6);
+  assert.equal(survival.numGroups, 9);
+  assert.equal(survival.maxDelayUs, 2600);
+  assert.equal(survival.rtpNackMaxPacketCount, 10);
+
+  const recoverySdp = buildNvstSdp({
+    width: 1920,
+    height: 1080,
+    fps: 60,
+    maxBitrateKbps: 20000,
+    partialReliableThresholdMs: 16,
+    codec: "H264",
+    colorQuality: "8bit_420",
+    networkRecoveryProfile: "survival",
+    credentials: {
+      ufrag: "ufrag-test",
+      pwd: "password-test",
+      fingerprint: "AA:BB:CC",
+    },
+  });
+  const lines = new Set(recoverySdp.split("\n"));
+  for (const line of [
+    "a=packetPacing.minNumPacketsPerGroup:6",
+    "a=packetPacing.numGroups:9",
+    "a=packetPacing.maxDelayUs:2600",
+    "a=packetPacing.minNumPacketsFrame:5",
+    "a=video.rtpNackQueueLength:512",
+    "a=video.rtpNackQueueMaxPackets:256",
+    "a=video.rtpNackMaxPacketCount:10",
+  ]) {
+    assert.equal(lines.has(line), true, `missing paced recovery SDP line: ${line}`);
   }
 });

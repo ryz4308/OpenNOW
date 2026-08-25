@@ -46,7 +46,10 @@ import {
   rewriteH265TierFlag,
   rewriteSdpIceCandidateEndpoints,
 } from "./sdp";
-import { resolveNvstQualityProfile } from "./sdp/nvstOffer";
+import {
+  resolveNvstPacketMicroburstProfile,
+  resolveNvstQualityProfile,
+} from "./sdp/nvstOffer";
 import { MicrophoneManager, type MicState, type MicStateChange } from "./microphoneManager";
 import type {
   StreamDiagnostics,
@@ -2423,6 +2426,10 @@ export class GfnWebRtcClient {
       maxBitrateKbps: settings.maxBitrateKbps,
       networkRecoveryProfile: this.options.networkRecoveryProfile ?? "current",
     });
+    const packetMicroburstProfile = resolveNvstPacketMicroburstProfile({
+      fps: settings.fps,
+      networkRecoveryProfile: this.options.networkRecoveryProfile ?? "current",
+    });
 
     if (answer.sdp) {
       answer.sdp = mungeAnswerSdp(answer.sdp, qualityProfile.maxBitrateKbps);
@@ -2473,6 +2480,9 @@ export class GfnWebRtcClient {
     if ((this.options.networkRecoveryProfile ?? "current") !== "current") {
       this.log(
         `Recovery SDP (${this.options.networkRecoveryProfile}): requestedMax=${settings.maxBitrateKbps}kbps, negotiatedMax=${qualityProfile.maxBitrateKbps}kbps, startup=${qualityProfile.startupBitrateKbps}kbps, rateDropWindow=${qualityProfile.fecRateDropWindow}, bitrateIir=${qualityProfile.bitrateIirFilterFactor}, FEC=${qualityProfile.fecRepairMinPercent}/${qualityProfile.fecRepairPercent}/${qualityProfile.fecRepairMaxPercent}%, resolutionDownshift=${qualityProfile.allowResolutionDownshift}`,
+      );
+      this.log(
+        `Packet Microburst Guard (${this.options.networkRecoveryProfile}): groups=${packetMicroburstProfile.numGroups}, minPacketsPerGroup=${packetMicroburstProfile.minNumPacketsPerGroup}, maxDelay=${packetMicroburstProfile.maxDelayUs}us, nackBurstCap=${packetMicroburstProfile.rtpNackMaxPacketCount}`,
       );
     }
 

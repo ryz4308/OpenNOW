@@ -50,6 +50,63 @@ export interface NvstQualityProfile {
 }
 
 /**
+ * Server-side packet shaping requested through NvST SDP.
+ *
+ * Chromium does not expose a receiver-side RTP pacer. These values therefore
+ * ask the NVIDIA streamer to split each encoded frame into smaller groups and
+ * bound the NACK repair burst before packets reach the local Wi-Fi link.
+ */
+export interface NvstPacketMicroburstProfile {
+  minNumPacketsPerGroup: number;
+  numGroups: number;
+  maxDelayUs: number;
+  minNumPacketsFrame: number;
+  rtpNackQueueLength: number;
+  rtpNackQueueMaxPackets: number;
+  rtpNackMaxPacketCount: number;
+}
+
+export function resolveNvstPacketMicroburstProfile(params: Pick<NvstParams, "fps" | "networkRecoveryProfile">): NvstPacketMicroburstProfile {
+  const recoveryProfile = params.networkRecoveryProfile ?? "current";
+  const currentNumGroups = params.fps === 120 ? 3 : 5;
+
+  if (recoveryProfile === "current") {
+    // Preserve the existing/official Nvsc values exactly.
+    return {
+      minNumPacketsPerGroup: 15,
+      numGroups: currentNumGroups,
+      maxDelayUs: 1000,
+      minNumPacketsFrame: 10,
+      rtpNackQueueLength: 1024,
+      rtpNackQueueMaxPackets: 512,
+      rtpNackMaxPacketCount: 25,
+    };
+  }
+
+  if (recoveryProfile === "balanced") {
+    return {
+      minNumPacketsPerGroup: 9,
+      numGroups: Math.max(currentNumGroups, 7),
+      maxDelayUs: 1800,
+      minNumPacketsFrame: 7,
+      rtpNackQueueLength: 768,
+      rtpNackQueueMaxPackets: 384,
+      rtpNackMaxPacketCount: 16,
+    };
+  }
+
+  return {
+    minNumPacketsPerGroup: 6,
+    numGroups: Math.max(currentNumGroups, 9),
+    maxDelayUs: 2600,
+    minNumPacketsFrame: 5,
+    rtpNackQueueLength: 512,
+    rtpNackQueueMaxPackets: 256,
+    rtpNackMaxPacketCount: 10,
+  };
+}
+
+/**
  * Resolve the bitrate/FEC envelope sent to NVIDIA in nvstSdp.
  *
  * The resilient profile deliberately leaves headroom below the user's cap so
@@ -121,6 +178,7 @@ export function buildNvstSdp(params: NvstParams): string {
     `[SDP] buildNvstSdp: ICE fields present ufrag=${Boolean(params.credentials.ufrag)}, pwd=${Boolean(params.credentials.pwd)}, fingerprint=${Boolean(params.credentials.fingerprint)}`,
   );
   const qualityProfile = resolveNvstQualityProfile(params);
+  const packetMicroburstProfile = resolveNvstPacketMicroburstProfile(params);
   const maxBitrate = qualityProfile.maxBitrateKbps;
   const startupBitrate = qualityProfile.startupBitrateKbps;
   const isHighFps = params.fps >= 90;
@@ -219,7 +277,7 @@ export function buildNvstSdp(params: NvstParams): string {
     // here (version/mode/enableAccurateSleep/etc. are native-client extras,
     // and vqos.relaxMaxBitrate.* / vqos.qpDelta.* detail attrs are not sent
     // by play.geforcenow.com at all — dropped to match it byte-for-byte).
-    "a=packetPacing.minNumPacketsPerGroup:15",
+    `a=packetPacing.minNumPacketsPerGroup:${packetMicroburstProfile.minNumPacketsPerGroup}`,
   );
 
   // High FPS optimizations
@@ -269,12 +327,12 @@ export function buildNvstSdp(params: NvstParams): string {
 
   // Packet pacing group/delay + NACK queues (official Nvsc defaults).
   lines.push(
-    `a=packetPacing.numGroups:${is120Fps ? 3 : 5}`,
-    "a=packetPacing.maxDelayUs:1000",
-    "a=packetPacing.minNumPacketsFrame:10",
-    "a=video.rtpNackQueueLength:1024",
-    "a=video.rtpNackQueueMaxPackets:512",
-    "a=video.rtpNackMaxPacketCount:25",
+    `a=packetPacing.numGroups:${packetMicroburstProfile.numGroups}`,
+    `a=packetPacing.maxDelayUs:${packetMicroburstProfile.maxDelayUs}`,
+    `a=packetPacing.minNumPacketsFrame:${packetMicroburstProfile.minNumPacketsFrame}`,
+    `a=video.rtpNackQueueLength:${packetMicroburstProfile.rtpNackQueueLength}`,
+    `a=video.rtpNackQueueMaxPackets:${packetMicroburstProfile.rtpNackQueueMaxPackets}`,
+    `a=video.rtpNackMaxPacketCount:${packetMicroburstProfile.rtpNackMaxPacketCount}`,
   );
 
   if (useHighThroughputPacing) {
