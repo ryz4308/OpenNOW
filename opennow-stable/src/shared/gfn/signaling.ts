@@ -151,6 +151,14 @@ export type MainToRendererSignalingEvent =
   | { type: "native-stream-stats"; stats: NativeStreamStats }
   | { type: "native-stream-transition"; transition: NativeVideoTransition }
   | { type: "native-input-ready"; protocolVersion: number }
+  | {
+      type: "diagnostic";
+      event: {
+        type: string;
+        detail: string;
+        values?: Record<string, number | string | boolean>;
+      };
+    }
   | { type: "error"; message: string }
   | { type: "log"; message: string };
 

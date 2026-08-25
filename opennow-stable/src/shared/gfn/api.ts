@@ -96,6 +96,13 @@ export interface GpuBackendInfo {
   hardwareEncodeCodecs: string[];
 }
 
+export interface GatewayPingResult {
+  measuredAtMs: number;
+  success: boolean;
+  latencyMs: number | null;
+  failure: "none" | "gateway-not-found" | "timeout" | "unreachable" | "probe-error";
+}
+
 export interface OpenNowApi {
   getAuthSession(input?: AuthSessionRequest): Promise<AuthSessionResult>;
   getLoginProviders(): Promise<LoginProvider[]>;
@@ -184,6 +191,8 @@ export interface OpenNowApi {
   submitBugReport(input: DesktopBugReportRequest): Promise<DesktopBugReportReceipt>;
   /** Ping all regions and return latency results */
   pingRegions(regions: StreamRegion[]): Promise<PingResult[]>;
+  /** Probe the selected local default gateway without exposing its address to the renderer. */
+  pingDefaultGateway(): Promise<GatewayPingResult>;
 
   /** Persist a PNG screenshot from a renderer-generated data URL */
   saveScreenshot(input: ScreenshotSaveRequest): Promise<ScreenshotEntry>;

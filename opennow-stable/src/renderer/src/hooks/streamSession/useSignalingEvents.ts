@@ -94,6 +94,15 @@ export function useSignalingEvents({
           ? failure
           : "the running CloudMatch session could not be resumed";
       console.error(`[Recovery] Seamless Resume failed after ${triggerReason}: ${detail}`);
+      streamDiagnosticsRecorder.recordEvent({
+        type: "SESSION_EXIT",
+        detail: `Seamless Resume failed after ${triggerReason}: ${detail}`,
+        values: {
+          source: "transport_recovery",
+          reasonCode: "seamless_resume_failed",
+          trigger: triggerReason,
+        },
+      });
       clientRef.current?.dispose();
       clientRef.current = null;
       setLaunchError({
@@ -296,9 +305,14 @@ export function useSignalingEvents({
           type: "GATEWAY_WEBSOCKET_ERROR",
           detail: event.message || "Signaling gateway error",
         });
+      } else if (event.type === "diagnostic") {
+        streamDiagnosticsRecorder.recordEvent(event.event);
       }
       try {
         if (event.type === "connected") {
+          return;
+        }
+        if (event.type === "diagnostic") {
           return;
         }
         if (event.type === "offer") {

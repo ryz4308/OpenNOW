@@ -28,6 +28,7 @@ test("records network and renderer incidents without exposing the raw session id
     availableBitrateKbps: 18_000,
     framesReceived: 100,
     packetsReceived: 1_000,
+    packetsLost: 2,
     keyFramesDecoded: 2,
   }, startedAt);
   recorder.recordEvent({
@@ -39,6 +40,12 @@ test("records network and renderer incidents without exposing the raw session id
       protocol: "udp",
     },
   }, startedAt + 100);
+  recorder.recordGatewayPing({
+    measuredAtMs: startedAt + 1_050,
+    success: true,
+    latencyMs: 2,
+    failure: "none",
+  });
   recorder.record({
     ...defaultDiagnostics(),
     connectionState: "connected",
@@ -70,6 +77,7 @@ test("records network and renderer incidents without exposing the raw session id
     availableBitrateKbps: 4_000,
     framesReceived: 120,
     packetsReceived: 1_100,
+    packetsLost: 7,
     keyFramesDecoded: 3,
     networkRecoveryAction: "keyframe_requested",
   }, startedAt + 1_100);
@@ -91,6 +99,7 @@ test("records network and renderer incidents without exposing the raw session id
     availableBitrateKbps: 16_000,
     framesReceived: 5,
     packetsReceived: 20,
+    packetsLost: 7,
     keyFramesDecoded: 1,
   }, startedAt + 2_200);
   recorder.record({
@@ -132,9 +141,13 @@ test("records network and renderer incidents without exposing the raw session id
   assert.equal(events.some((event) => event.type === "AVAILABLE_BITRATE_RECOVERED"), true);
   assert.equal(events.some((event) => event.type === "NETWORK_RECOVERY_ACTION"), true);
   assert.equal(events.some((event) => event.type === "RTP_COUNTER_RESET"), true);
+  assert.equal(events.some((event) => event.type === "RTP_LOSS_STARTED"), true);
+  assert.equal(events.some((event) => event.type === "RTP_LOSS_INCREMENT"), true);
+  assert.equal(events.some((event) => event.type === "RTP_LOSS_ENDED"), true);
+  assert.equal(events.some((event) => event.type === "GATEWAY_PING"), true);
   const gatewayEvent = events.find((event) => event.type === "GATEWAY_WEBSOCKET_CONNECTED");
   assert.deepEqual(gatewayEvent?.values, { candidateType: "srflx", protocol: "udp" });
-  assert.equal(report.schemaVersion, 5);
+  assert.equal(report.schemaVersion, 6);
 
   const summary = report.summary as {
     sampleCount: number;

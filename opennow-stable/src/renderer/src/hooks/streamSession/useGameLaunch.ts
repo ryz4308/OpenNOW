@@ -428,6 +428,33 @@ export function useGameLaunch({
         console.log(
           `Poll attempt ${attempt}: status=${mergedSession.status}, seatSetupStep=${mergedSession.seatSetupStep ?? "n/a"}, queuePosition=${mergedSession.queuePosition ?? "n/a"}, serverIp=${mergedSession.serverIp}, queueMode=${isInQueueMode}, adsRequired=${isSessionAdsRequired(mergedSession.adState)}`,
         );
+        streamDiagnosticsRecorder.recordEvent({
+          type: "CLOUDMATCH_STATUS",
+          detail: `CloudMatch launch poll reports status ${mergedSession.status}`,
+          values: {
+            pollAttempt: attempt,
+            status: mergedSession.status,
+            queuePosition: mergedSession.queuePosition ?? -1,
+            queueMode: isInQueueMode,
+            seatSetupStep: mergedSession.seatSetupStep ?? -1,
+          },
+        });
+        streamDiagnosticsRecorder.recordEvent({
+          type: "REMOTE_GAME_PROCESS_STATE",
+          detail: isSessionReadyForConnect(mergedSession.status)
+            ? "Remote game process is inferred as running"
+            : isInQueueMode
+              ? "Remote game process is inferred as not started while queued"
+              : "Remote game process is inferred as starting",
+          values: {
+            state: isSessionReadyForConnect(mergedSession.status)
+              ? "running"
+              : isInQueueMode
+                ? "queued"
+                : "starting",
+            inferredFromCloudMatch: true,
+          },
+        });
 
         if (isSessionReadyForConnect(mergedSession.status)) {
           finalSession = mergedSession;

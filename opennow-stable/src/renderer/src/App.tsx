@@ -283,6 +283,36 @@ export function App(): JSX.Element {
   }, [diagnosticsStore]);
 
   useEffect(() => {
+    if (!isStreaming) return undefined;
+    let stopped = false;
+    let timer: number | null = null;
+    const probe = async (): Promise<void> => {
+      try {
+        const result = await window.openNow.pingDefaultGateway();
+        if (!stopped) streamDiagnosticsRecorder.recordGatewayPing(result);
+      } catch (error) {
+        if (!stopped) {
+          streamDiagnosticsRecorder.recordEvent({
+            type: "GATEWAY_PING_ERROR",
+            detail: error instanceof Error ? error.message : "Local gateway probe failed",
+          });
+        }
+      }
+      if (!stopped) {
+        timer = window.setTimeout(
+          () => void probe(),
+          streamDiagnosticsRecorder.isIncidentBurstActive() ? 250 : 1_000,
+        );
+      }
+    };
+    void probe();
+    return () => {
+      stopped = true;
+      if (timer !== null) window.clearTimeout(timer);
+    };
+  }, [isStreaming]);
+
+  useEffect(() => {
     streamDiagnosticsRecorder.setContext({
       gameTitle: streamingGame?.title,
       requestedResolution: settings.resolution,
@@ -974,6 +1004,67 @@ export function App(): JSX.Element {
   }, [authSession, effectiveStreamingBaseUrl, settings.region]);
 
   refreshNavbarActiveSessionRef.current = refreshNavbarActiveSession;
+
+  useEffect(() => {
+    if (!authSession || streamStatus !== "streaming") return undefined;
+    let stopped = false;
+    let timer: number | null = null;
+    const poll = async (): Promise<void> => {
+      const token = authSession.tokens.idToken ?? authSession.tokens.accessToken;
+      const streamingBaseUrl = settings.region.trim()
+        ? effectiveStreamingBaseUrl
+        : authSession.provider.streamingServiceUrl;
+      try {
+        const activeSessions = token && streamingBaseUrl
+          ? await window.openNow.getActiveSessions(token, streamingBaseUrl)
+          : [];
+        if (stopped) return;
+        const current = sessionRef.current;
+        const exact = current
+          ? activeSessions.find((entry) => entry.sessionId === current.sessionId)
+          : undefined;
+        const processState = !exact
+          ? "not_reported"
+          : exact.status === 3
+            ? "running"
+            : exact.status === 2
+              ? "starting_or_queued"
+              : "not_running";
+        streamDiagnosticsRecorder.recordEvent({
+          type: "CLOUDMATCH_STATUS",
+          detail: exact ? `CloudMatch reports status ${exact.status}` : "Active session absent from CloudMatch",
+          values: {
+            present: Boolean(exact),
+            status: exact?.status ?? -1,
+            activeSessionCount: activeSessions.length,
+          },
+        });
+        streamDiagnosticsRecorder.recordEvent({
+          type: "REMOTE_GAME_PROCESS_STATE",
+          detail: `Remote game process is inferred as ${processState}`,
+          values: { state: processState, inferredFromCloudMatch: true },
+        });
+      } catch (error) {
+        if (!stopped) {
+          streamDiagnosticsRecorder.recordEvent({
+            type: "CLOUDMATCH_STATUS_ERROR",
+            detail: error instanceof Error ? error.message : "CloudMatch status poll failed",
+          });
+        }
+      }
+      if (!stopped) {
+        timer = window.setTimeout(
+          () => void poll(),
+          streamDiagnosticsRecorder.isIncidentBurstActive() ? 1_000 : 5_000,
+        );
+      }
+    };
+    void poll();
+    return () => {
+      stopped = true;
+      if (timer !== null) window.clearTimeout(timer);
+    };
+  }, [authSession, effectiveStreamingBaseUrl, settings.region, streamStatus]);
 
   const gameTitleByAppId = useMemo(() => {
     const titles = new Map<number, string>();
@@ -1958,6 +2049,11 @@ export function App(): JSX.Element {
       detail: reason || "Remote session ended",
       values: { expected: true },
     });
+    streamDiagnosticsRecorder.recordEvent({
+      type: "SESSION_EXIT",
+      detail: reason || "Remote session ended",
+      values: { source: "remote", reasonCode: reason ? "remote_reason" : "remote_ended", expected: true },
+    });
     const activeGameId = streamingGameRef.current?.id;
     if (activeGameId) {
       endPlaytimeSession(activeGameId);
@@ -2405,12 +2501,22 @@ export function App(): JSX.Element {
         detail: "Session exit and CloudMatch stop completed",
         values: { userInitiated: true },
       });
+      streamDiagnosticsRecorder.recordEvent({
+        type: "SESSION_EXIT",
+        detail: "User requested exit; signaling disconnected and CloudMatch stop completed",
+        values: { source: "user", reasonCode: "user_requested", stopCompleted: true },
+      });
     } catch (error) {
       console.error("Stop failed:", error);
       streamDiagnosticsRecorder.recordEvent({
         type: "SESSION_EXIT_FAILED",
         detail: error instanceof Error ? error.message : "Session exit failed",
         values: { userInitiated: true },
+      });
+      streamDiagnosticsRecorder.recordEvent({
+        type: "SESSION_EXIT",
+        detail: error instanceof Error ? error.message : "User-requested session exit failed",
+        values: { source: "user", reasonCode: "stop_failed", stopCompleted: false },
       });
     }
   }, [endPlaytimeSession, markExplicitSignalingShutdown, refreshNavbarActiveSession, resetLaunchRuntime, resolveExitPrompt, stopSessionByTarget, streamingGame]);

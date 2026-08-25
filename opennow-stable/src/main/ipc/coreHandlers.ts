@@ -20,6 +20,7 @@ import type {
   StreamRegion,
   ThankYouDataResult,
   GpuBackendInfo,
+  GatewayPingResult,
 } from "@shared/gfn";
 import { exportLogs } from "@shared/logger";
 import { provisionZortosCommunityProxy } from "../community/provisionSessionProxy";
@@ -38,6 +39,7 @@ import {
   fetchPrintedWasteServerMapping,
 } from "../services/printedWaste";
 import { pingRegions } from "../services/regionPing";
+import { pingDefaultGateway } from "../services/gatewayPing";
 import type { SettingsManager } from "../settings";
 import type { AppUpdaterController } from "../updater";
 import type { SignalingCoordinator } from "../signaling/signalingCoordinator";
@@ -427,6 +429,11 @@ export function registerCoreIpcHandlers(deps: CoreIpcHandlerDeps): void {
     async (_event, regions: StreamRegion[]): Promise<PingResult[]> => {
       return pingRegions(regions);
     },
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.DIAGNOSTICS_GATEWAY_PING,
+    async (): Promise<GatewayPingResult> => pingDefaultGateway(),
   );
 
   // PrintedWaste queue API — fetched from main process so User-Agent can be set

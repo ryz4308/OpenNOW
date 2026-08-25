@@ -1,4 +1,4 @@
-import type { NetworkRecoveryProfile } from "@shared/gfn";
+import type { GatewayPingResult, NetworkRecoveryProfile } from "@shared/gfn";
 import type { StreamDiagnostics } from "../platforms/gfn/webrtcClient";
 
 export interface DiagnosticsRecorderContext {
@@ -36,8 +36,10 @@ interface ActiveIncident {
 }
 
 const SAMPLE_INTERVAL_MS = 1_000;
+const INCIDENT_SAMPLE_INTERVAL_MS = 250;
+const INCIDENT_BURST_WINDOW_MS = 10_000;
 const MAX_SAMPLES = 3_600;
-const MAX_EVENTS = 2_000;
+const MAX_EVENTS = 5_000;
 const SPIKE_EVENT_COOLDOWN_MS = 5_000;
 
 export class StreamDiagnosticsRecorder {
@@ -50,6 +52,9 @@ export class StreamDiagnosticsRecorder {
   private readonly incidents = new Map<string, ActiveIncident>();
   private readonly lastSpikeEventAtMs = new Map<string, number>();
   private readonly streamAliases = new Map<string, string>();
+  private rtpLossIncident: { startedAtMs: number; initialPacketsLost: number; lastLossAtMs: number } | null = null;
+  private rtpLossBurstUntilMs = Number.NEGATIVE_INFINITY;
+  private lastGatewayPing: GatewayPingResult | null = null;
 
   setContext(context: DiagnosticsRecorderContext): void {
     this.context = { ...this.context, ...context };
@@ -67,9 +72,32 @@ export class StreamDiagnosticsRecorder {
     );
   }
 
+  recordGatewayPing(result: GatewayPingResult): void {
+    this.lastGatewayPing = result;
+    this.pushEvent(
+      result.measuredAtMs,
+      "GATEWAY_PING",
+      result.success ? "Local default gateway replied" : `Local default gateway probe ${result.failure}`,
+      {
+        success: result.success,
+        latencyMs: result.latencyMs ?? -1,
+        failure: result.failure,
+        rtpLossActive: this.rtpLossIncident !== null,
+        incidentBurst: this.isIncidentBurstActive(result.measuredAtMs),
+      },
+    );
+  }
+
+  isIncidentBurstActive(nowMs = Date.now()): boolean {
+    return nowMs < this.rtpLossBurstUntilMs;
+  }
+
   record(stats: StreamDiagnostics, recordedAtMs = Date.now()): void {
     this.recordTransitions(stats, recordedAtMs);
-    if (recordedAtMs - this.lastSampleAtMs < SAMPLE_INTERVAL_MS) {
+    const sampleIntervalMs = this.isIncidentBurstActive(recordedAtMs)
+      ? INCIDENT_SAMPLE_INTERVAL_MS
+      : SAMPLE_INTERVAL_MS;
+    if (recordedAtMs - this.lastSampleAtMs < sampleIntervalMs) {
       this.previous = cloneDiagnostics(stats);
       return;
     }
@@ -89,13 +117,14 @@ export class StreamDiagnosticsRecorder {
   exportReport(generatedAtMs = Date.now()): Record<string, unknown> {
     const finishedAt = this.samples.at(-1)?.timestamp ?? new Date(generatedAtMs).toISOString();
     return {
-      schemaVersion: 5,
+      schemaVersion: 6,
       generatedAt: new Date(generatedAtMs).toISOString(),
       captureStartedAt: new Date(this.startedAtMs).toISOString(),
       captureFinishedAt: finishedAt,
       context: this.context,
       notes: [
-        "Samples are captured once per second even when the statistics overlay is closed.",
+        "Samples are captured once per second, increasing to four per second for ten seconds around RTP loss.",
+        "GATEWAY_PING is measured against the local default gateway; its address is never exported.",
         "streamIdentifier is a local alias; the NVIDIA session identifier is not exported.",
         "availableBitrateKbps is browser-estimated and may be unavailable or inaccurate.",
         "Cursor Viewport Guard events record CSS viewport, source resolution, and DPI resynchronization.",
@@ -174,6 +203,7 @@ export class StreamDiagnosticsRecorder {
       this.recordCounterIncrease(nowMs, "NACK_INCREASED", "nackCount", previous.nackCount, stats.nackCount);
       this.recordCounterIncrease(nowMs, "PLI_INCREASED", "pliCount", previous.pliCount, stats.pliCount);
       this.recordCounterIncrease(nowMs, "FIR_INCREASED", "firCount", previous.firCount, stats.firCount);
+      this.recordRtpLoss(nowMs, previous, stats);
     }
 
     const targetFps = Math.max(30, this.context.targetFps ?? 60);
@@ -200,6 +230,52 @@ export class StreamDiagnosticsRecorder {
       this.pushSpikeEvent(nowMs, "RTT_SPIKE", `${stats.rttMs.toFixed(1)} ms RTT`, {
         rttMs: round(stats.rttMs, 1),
         jitterMs: round(stats.jitterMs, 1),
+      });
+    }
+  }
+
+  private recordRtpLoss(
+    nowMs: number,
+    previous: StreamDiagnostics,
+    current: StreamDiagnostics,
+  ): void {
+    const delta = current.packetsLost - previous.packetsLost;
+    if (delta > 0) {
+      this.rtpLossBurstUntilMs = Math.max(this.rtpLossBurstUntilMs, nowMs + INCIDENT_BURST_WINDOW_MS);
+      if (!this.rtpLossIncident) {
+        this.rtpLossIncident = {
+          startedAtMs: nowMs,
+          initialPacketsLost: previous.packetsLost,
+          lastLossAtMs: nowMs,
+        };
+        this.pushEvent(nowMs, "RTP_LOSS_STARTED", "Inbound RTP packet loss started", {
+          packetsLost: current.packetsLost,
+          packetsLostDelta: delta,
+          bitrateKbps: current.bitrateKbps,
+          availableBitrateKbps: current.availableBitrateKbps,
+          gatewaySuccess: this.lastGatewayPing?.success ?? false,
+          gatewayLatencyMs: this.lastGatewayPing?.latencyMs ?? -1,
+        });
+      } else {
+        this.rtpLossIncident.lastLossAtMs = nowMs;
+      }
+      this.pushEvent(nowMs, "RTP_LOSS_INCREMENT", `packetsLost increased by ${delta}`, {
+        previous: previous.packetsLost,
+        current: current.packetsLost,
+        delta,
+        bitrateKbps: current.bitrateKbps,
+        receiveFps: current.receiveFps,
+      });
+      return;
+    }
+
+    if (this.rtpLossIncident && delta === 0) {
+      const incident = this.rtpLossIncident;
+      this.rtpLossIncident = null;
+      this.pushEvent(nowMs, "RTP_LOSS_ENDED", "Inbound RTP packet loss stopped increasing", {
+        durationMs: Math.max(0, nowMs - incident.startedAtMs),
+        quietAfterLastLossMs: Math.max(0, nowMs - incident.lastLossAtMs),
+        packetsLostDelta: Math.max(0, current.packetsLost - incident.initialPacketsLost),
       });
     }
   }

@@ -321,6 +321,8 @@ export class GfnWebRtcClient {
   private heartbeatTimer: number | null = null;
   private statsTimer: number | null = null;
   private statsPollInFlight = false;
+  private statsPollingActive = false;
+  private statsBurstUntilMs = Number.NEGATIVE_INFINITY;
   private externalEscapeCleanup: (() => void) | null = null;
   private queuedCandidates: RTCIceCandidateInit[] = [];
 
@@ -1096,12 +1098,13 @@ export class GfnWebRtcClient {
   }
 
   private clearTimers(): void {
+    this.statsPollingActive = false;
     if (this.heartbeatTimer !== null) {
       window.clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = null;
     }
     if (this.statsTimer !== null) {
-      window.clearInterval(this.statsTimer);
+      window.clearTimeout(this.statsTimer);
       this.statsTimer = null;
     }
     this.gamepadController.stop();
@@ -1110,18 +1113,28 @@ export class GfnWebRtcClient {
 
   private setupStatsPolling(): void {
     if (this.statsTimer !== null) {
-      window.clearInterval(this.statsTimer);
+      window.clearTimeout(this.statsTimer);
     }
-
-    this.statsTimer = window.setInterval(() => {
+    this.statsPollingActive = true;
+    this.statsBurstUntilMs = Number.NEGATIVE_INFINITY;
+    const scheduleNext = (): void => {
+      if (!this.statsPollingActive) return;
+      const delayMs = performance.now() < this.statsBurstUntilMs ? 250 : 1_000;
+      this.statsTimer = window.setTimeout(poll, delayMs);
+    };
+    const poll = (): void => {
+      if (!this.statsPollingActive) return;
       if (this.statsPollInFlight) {
+        scheduleNext();
         return;
       }
       this.statsPollInFlight = true;
       void this.collectStats().finally(() => {
         this.statsPollInFlight = false;
+        scheduleNext();
       });
-    }, 1000);
+    };
+    scheduleNext();
   }
 
   private updateRenderFps(): void {
@@ -1225,6 +1238,9 @@ export class GfnWebRtcClient {
         // Calculate packet loss percentage over the interval
         const packetsDelta = packetsReceived - prevSample.packetsReceived;
         const lostDelta = packetsLost - prevSample.packetsLost;
+        if (lostDelta > 0) {
+          this.statsBurstUntilMs = Math.max(this.statsBurstUntilMs, now + 10_000);
+        }
         if (packetsDelta > 0) {
           const totalPackets = packetsDelta + lostDelta;
           this.diagnostics.packetLossPercent = totalPackets > 0
@@ -2347,10 +2363,16 @@ export class GfnWebRtcClient {
 
     pc.onicegatheringstatechange = () => {
       this.log(`ICE gathering state: ${pc.iceGatheringState}`);
+      this.diagnosticEvent("ICE_GATHERING_STATE", `ICE gathering changed to ${pc.iceGatheringState}`, {
+        state: pc.iceGatheringState,
+      });
     };
 
     pc.onsignalingstatechange = () => {
       this.log(`Signaling state: ${pc.signalingState}`);
+      this.diagnosticEvent("WEBRTC_SIGNALING_STATE", `WebRTC signaling changed to ${pc.signalingState}`, {
+        state: pc.signalingState,
+      });
     };
 
     pc.ontrack = (event) => {
@@ -2361,6 +2383,16 @@ export class GfnWebRtcClient {
         streams: event.streams.length,
       });
       this.peerMediaController.attachTrack(event.track);
+      const recordTrackState = (state: "muted" | "unmuted" | "ended"): void => {
+        this.diagnosticEvent("MEDIA_TRACK_STATE", `${event.track.kind} track ${state}`, {
+          kind: event.track.kind,
+          state,
+          readyState: event.track.readyState,
+        });
+      };
+      event.track.addEventListener("mute", () => recordTrackState("muted"));
+      event.track.addEventListener("unmute", () => recordTrackState("unmuted"));
+      event.track.addEventListener("ended", () => recordTrackState("ended"));
 
       // Configure low-latency jitter buffer for video and audio receivers
       this.decoderPressureController.configureReceiver(event.receiver, event.track.kind);

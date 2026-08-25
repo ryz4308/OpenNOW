@@ -59,6 +59,7 @@ import type {
   GameAccountOperationRequest,
   GameAccountConnectionsResult,
   GameAccountOperationResult,
+  GatewayPingResult,
 } from "@shared/gfn";
 import type { DiscordActivityUpdate } from "@shared/discord";
 import type { DesktopBugReportReceipt, DesktopBugReportRequest } from "@shared/bugReport";
@@ -254,6 +255,8 @@ const api: OpenNowApi = {
   submitBugReport: (input: DesktopBugReportRequest): Promise<DesktopBugReportReceipt> =>
     ipcRenderer.invoke(IPC_CHANNELS.BUG_REPORT_SUBMIT, input),
   pingRegions: (regions: StreamRegion[]) => ipcRenderer.invoke(IPC_CHANNELS.PING_REGIONS, regions),
+  pingDefaultGateway: (): Promise<GatewayPingResult> =>
+    ipcRenderer.invoke(IPC_CHANNELS.DIAGNOSTICS_GATEWAY_PING),
   saveScreenshot: (input: ScreenshotSaveRequest) => ipcRenderer.invoke(IPC_CHANNELS.SCREENSHOT_SAVE, input),
   listScreenshots: () => ipcRenderer.invoke(IPC_CHANNELS.SCREENSHOT_LIST),
   deleteScreenshot: (input: ScreenshotDeleteRequest) => ipcRenderer.invoke(IPC_CHANNELS.SCREENSHOT_DELETE, input),

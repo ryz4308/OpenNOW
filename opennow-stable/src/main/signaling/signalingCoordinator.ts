@@ -145,10 +145,7 @@ export class SignalingCoordinator {
     ipcMain.handle(
       IPC_CHANNELS.REQUEST_KEYFRAME,
       async (_event, payload: KeyframeRequest) => {
-        if (!this.signalingClient) {
-          throw new Error("Signaling is not connected");
-        }
-        return this.signalingClient.requestKeyframe(payload);
+        return this.requestKeyframe(payload, "renderer");
       },
     );
 
@@ -377,13 +374,50 @@ export class SignalingCoordinator {
         await this.signalingClient.sendIceCandidate(candidate);
       },
       requestKeyframe: async (payload) => {
-        if (!this.signalingClient) {
-          throw new Error("Signaling is not connected");
-        }
-        await this.signalingClient.requestKeyframe(payload);
+        await this.requestKeyframe(payload, "native_streamer");
       },
     });
     return this.nativeStreamerManager;
+  }
+
+  private async requestKeyframe(payload: KeyframeRequest, source: string): Promise<void> {
+    if (!this.signalingClient) {
+      throw new Error("Signaling is not connected");
+    }
+    this.emitToRenderer({
+      type: "diagnostic",
+      event: {
+        type: "KEYFRAME_REQUEST_ATTEMPT",
+        detail: "Outgoing signaling keyframe request attempted",
+        values: {
+          source,
+          reason: payload.reason,
+          backlogFrames: payload.backlogFrames,
+          attempt: payload.attempt,
+        },
+      },
+    });
+    try {
+      await this.signalingClient.requestKeyframe(payload);
+      this.emitToRenderer({
+        type: "diagnostic",
+        event: {
+          type: "KEYFRAME_REQUEST_SENT",
+          detail: "Outgoing signaling keyframe request accepted by the gateway",
+          values: { source, reason: payload.reason, attempt: payload.attempt },
+        },
+      });
+    } catch (error) {
+      this.emitToRenderer({
+        type: "diagnostic",
+        event: {
+          type: "KEYFRAME_REQUEST_FAILED",
+          detail: error instanceof Error ? error.message : "Outgoing keyframe request failed",
+          values: { source, reason: payload.reason, attempt: payload.attempt },
+        },
+      });
+      throw error;
+    }
   }
 
   private isNativeStreamerSelected(): boolean {
