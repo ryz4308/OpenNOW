@@ -1,5 +1,5 @@
 import { Cpu, Monitor, Radio, Wifi, X, XCircle } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { JSX, Ref } from "react";
 import { m, useReducedMotion } from "motion/react";
 import {
@@ -15,6 +15,12 @@ import { QueueAdPreview, type QueueAdPlaybackEvent, type QueueAdPreviewHandle } 
 import { LazyShaderAtmosphere } from "./LazyShaderAtmosphere";
 import { useTranslation } from "../i18n";
 import { getStatusPulseMotion } from "./MotionProvider";
+import {
+  estimateQueueWait,
+  formatQueueWaitEstimate,
+  type QueuePositionObservation,
+} from "../utils/queueWaitEstimator";
+import "./StreamLoadingResilience.css";
 
 type TranslateFunction = typeof import("../i18n").t;
 
@@ -32,6 +38,7 @@ export interface StreamLoadingProps {
   status: "queue" | "setup" | "starting" | "connecting";
   queuePosition?: number;
   estimatedWait?: string;
+  queueEstimateKey?: string;
   adState?: SessionAdState;
   activeAd?: SessionAdInfo;
   activeAdMediaUrl?: string;
@@ -127,6 +134,7 @@ export function StreamLoading({
   status,
   queuePosition,
   estimatedWait,
+  queueEstimateKey = "default",
   adState,
   activeAd,
   activeAdMediaUrl,
@@ -141,6 +149,11 @@ export function StreamLoading({
   const statusPulseMotion = getStatusPulseMotion(reducedMotion);
   const [startedAt] = useState(() => Date.now());
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [activeQueueSeconds, setActiveQueueSeconds] = useState(0);
+  const [queueObservations, setQueueObservations] = useState<QueuePositionObservation[]>([]);
+  const [persistedQueueRate, setPersistedQueueRate] = useState<number | null>(null);
+  const lastTimerAtRef = useRef(Date.now());
+  const lastPersistedClearedRef = useRef(0);
   const hasError = Boolean(error);
   const statusMessage = getStatusMessage(t, status, queuePosition, adState, hasError);
   const platformName = platformStore ? getStoreDisplayName(platformStore) : "";
@@ -148,14 +161,88 @@ export function StreamLoading({
   const adSummary = getAdSummary(t, adState);
   const cachedAdMediaUrl = activeAdMediaUrl ?? getPreferredSessionAdMediaUrl(activeAd);
   const activeStage = getActiveStage(status);
+  const queuePaused = isSessionQueuePaused(adState);
+
+  useEffect(() => {
+    const storageKey = `opennow.queue-rate.v1.${queueEstimateKey}`;
+    try {
+      const stored = JSON.parse(window.localStorage.getItem(storageKey) ?? "null") as {
+        secondsPerPosition?: number;
+        updatedAt?: number;
+      } | null;
+      const isFresh = stored?.updatedAt && Date.now() - stored.updatedAt < 14 * 24 * 60 * 60 * 1000;
+      setPersistedQueueRate(isFresh && Number.isFinite(stored?.secondsPerPosition)
+        ? stored!.secondsPerPosition!
+        : null);
+    } catch {
+      setPersistedQueueRate(null);
+    }
+    setQueueObservations([]);
+    setActiveQueueSeconds(0);
+    lastPersistedClearedRef.current = 0;
+  }, [queueEstimateKey]);
 
   useEffect(() => {
     if (hasError) return undefined;
+    lastTimerAtRef.current = Date.now();
     const timer = window.setInterval(() => {
-      setElapsedSeconds(Math.floor((Date.now() - startedAt) / 1000));
+      const now = Date.now();
+      const deltaSeconds = Math.max(0, (now - lastTimerAtRef.current) / 1000);
+      lastTimerAtRef.current = now;
+      setElapsedSeconds(Math.floor((now - startedAt) / 1000));
+      if (status === "queue" && !queuePaused) {
+        setActiveQueueSeconds((value) => value + deltaSeconds);
+      }
     }, 1000);
     return () => window.clearInterval(timer);
-  }, [hasError, startedAt]);
+  }, [hasError, queuePaused, startedAt, status]);
+
+  useEffect(() => {
+    if (status !== "queue" || !queuePosition || queuePosition < 1) return;
+    setQueueObservations((current) => {
+      const last = current.at(-1);
+      if (last?.position === queuePosition) return current;
+      const next = { activeElapsedSeconds: activeQueueSeconds, position: queuePosition };
+      if (last && queuePosition > last.position) return [next];
+      return [...current, next].slice(-40);
+    });
+  }, [activeQueueSeconds, queuePosition, status]);
+
+  const queueWaitEstimate = useMemo(() => {
+    if (status !== "queue" || !queuePosition) return null;
+    return estimateQueueWait({
+      position: queuePosition,
+      activeElapsedSeconds: activeQueueSeconds,
+      observations: queueObservations,
+      persistedSecondsPerPosition: persistedQueueRate,
+    });
+  }, [activeQueueSeconds, persistedQueueRate, queueObservations, queuePosition, status]);
+
+  useEffect(() => {
+    if (!queueWaitEstimate || queueWaitEstimate.clearedPositions < 3) return;
+    if (queueWaitEstimate.clearedPositions <= lastPersistedClearedRef.current) return;
+    lastPersistedClearedRef.current = queueWaitEstimate.clearedPositions;
+    const blendedRate = persistedQueueRate === null
+      ? queueWaitEstimate.secondsPerPosition
+      : persistedQueueRate * 0.75 + queueWaitEstimate.secondsPerPosition * 0.25;
+    setPersistedQueueRate(blendedRate);
+    try {
+      window.localStorage.setItem(`opennow.queue-rate.v1.${queueEstimateKey}`, JSON.stringify({
+        secondsPerPosition: blendedRate,
+        updatedAt: Date.now(),
+      }));
+    } catch {
+      // The live estimate still works when storage is disabled.
+    }
+  }, [persistedQueueRate, queueEstimateKey, queueWaitEstimate]);
+
+  const queueWaitText = status === "queue"
+    ? estimatedWait
+      ? `~${estimatedWait}`
+      : queueWaitEstimate
+        ? formatQueueWaitEstimate(queueWaitEstimate.remainingSeconds)
+        : t("streamLoading.telemetry.calculating")
+    : t("streamLoading.telemetry.cleared");
 
   return (
     <div className={`sload${hasError ? " sload--error" : ""}`}>
@@ -234,7 +321,7 @@ export function StreamLoading({
         </div>
 
         {!hasError && (
-          <div className="sload-facts">
+          <div className="sload-facts sload-facts--with-eta">
             <div className="sload-fact">
               <p>{t("streamLoading.telemetry.queuePosition")}</p>
               <strong>{status === "queue" && queuePosition ? `#${queuePosition}` : status === "queue" ? t("streamLoading.telemetry.calculating") : t("streamLoading.telemetry.cleared")}</strong>
@@ -242,6 +329,10 @@ export function StreamLoading({
             <div className="sload-fact">
               <p>{t("streamLoading.telemetry.elapsed")}</p>
               <strong>{formatWaitTime(elapsedSeconds)}</strong>
+            </div>
+            <div className="sload-fact">
+              <p>{t("streamLoading.telemetry.estimatedLeft")}</p>
+              <strong>{queueWaitText}</strong>
             </div>
             <div className="sload-fact">
               <p>{t("streamLoading.cozy.next")}</p>
@@ -265,10 +356,6 @@ export function StreamLoading({
               />
             </div>
           </div>
-        )}
-
-        {status === "queue" && estimatedWait && !hasError && (
-          <p className="sload-queue"><span className="sload-wait">~{estimatedWait}</span></p>
         )}
 
         <div className="sload-actions">

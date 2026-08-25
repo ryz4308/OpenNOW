@@ -202,19 +202,29 @@ test("buildNvstSdp floors low bitrate and applies protocol input defaults", () =
   assert.equal(sdp.endsWith("\n"), true);
 });
 
-test("buildNvstSdp applies the experimental resilient network profile", () => {
-  const profile = resolveNvstQualityProfile({
-    maxBitrateKbps: 20000,
-    resilientNetworkProfile: true,
+test("buildNvstSdp applies current, balanced, and survival recovery profiles", () => {
+  const current = resolveNvstQualityProfile({
+    maxBitrateKbps: 50000,
+    networkRecoveryProfile: "current",
   });
-  assert.deepEqual(profile, {
-    maxBitrateKbps: 14000,
-    startupBitrateKbps: 4000,
-    fecRateDropWindow: 6,
-    fecRepairMinPercent: 8,
-    fecRepairPercent: 10,
-    fecRepairMaxPercent: 40,
+  const balanced = resolveNvstQualityProfile({
+    maxBitrateKbps: 50000,
+    networkRecoveryProfile: "balanced",
   });
+  const survival = resolveNvstQualityProfile({
+    maxBitrateKbps: 50000,
+    networkRecoveryProfile: "survival",
+  });
+  assert.equal(current.maxBitrateKbps, 50000);
+  assert.equal(current.allowResolutionDownshift, false);
+  assert.equal(balanced.maxBitrateKbps, 22000);
+  assert.equal(balanced.startupBitrateKbps, 6000);
+  assert.equal(balanced.fecRepairPercent, 8);
+  assert.equal(balanced.allowResolutionDownshift, false);
+  assert.equal(survival.maxBitrateKbps, 16000);
+  assert.equal(survival.startupBitrateKbps, 4000);
+  assert.equal(survival.fecRepairPercent, 12);
+  assert.equal(survival.allowResolutionDownshift, true);
 
   const sdp = buildNvstSdp({
     width: 1920,
@@ -224,7 +234,7 @@ test("buildNvstSdp applies the experimental resilient network profile", () => {
     partialReliableThresholdMs: 16,
     codec: "H264",
     colorQuality: "8bit_420",
-    resilientNetworkProfile: true,
+    networkRecoveryProfile: "survival",
     credentials: {
       ufrag: "ufrag-test",
       pwd: "password-test",
@@ -235,11 +245,14 @@ test("buildNvstSdp applies the experimental resilient network profile", () => {
   for (const line of [
     "a=video.initialBitrateKbps:4000",
     "a=video.initialPeakBitrateKbps:4000",
-    "a=vqos.bw.maximumBitrateKbps:14000",
-    "a=vqos.fec.rateDropWindow:6",
-    "a=vqos.fec.repairMinPercent:8",
-    "a=vqos.fec.repairPercent:10",
-    "a=vqos.fec.repairMaxPercent:40",
+    "a=vqos.bw.maximumBitrateKbps:16000",
+    "a=vqos.fec.rateDropWindow:3",
+    "a=vqos.fec.repairMinPercent:10",
+    "a=vqos.fec.repairPercent:12",
+    "a=vqos.fec.repairMaxPercent:45",
+    "a=vqos.drc.bitrateIirFilterFactor:8",
+    "a=vqos.dfc.enable:1",
+    "a=vqos.dfc.adjustResAndFps:1",
   ]) {
     assert.equal(lines.has(line), true, `missing resilient SDP line: ${line}`);
   }

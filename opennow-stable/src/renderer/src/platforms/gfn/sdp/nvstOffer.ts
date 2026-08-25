@@ -1,4 +1,4 @@
-import type { ColorQuality, VideoCodec } from "@shared/gfn";
+import type { ColorQuality, NetworkRecoveryProfile, VideoCodec } from "@shared/gfn";
 import {
   PARTIALLY_RELIABLE_GAMEPAD_MASK_ALL,
   PARTIALLY_RELIABLE_HID_DEVICE_MASK_ALL,
@@ -12,6 +12,8 @@ const ENABLE_DYNAMIC_SPLIT_ENCODE_UPDATES = true;
 export const OFFICIAL_MIN_BITRATE_KBPS = 4000;
 const HIGH_RESOLUTION_PIXEL_COUNT = 2764800; // 2560x1080 / 1920x1440 class
 const HIGH_BITRATE_PACING_THRESHOLD_KBPS = 42000;
+export const BALANCED_RECOVERY_MAX_BITRATE_KBPS = 22000;
+export const SURVIVAL_RECOVERY_MAX_BITRATE_KBPS = 16000;
 
 interface IceCredentials {
   ufrag: string;
@@ -32,8 +34,8 @@ interface NvstParams {
   enablePartiallyReliableTransferGamepad?: number;
   enablePartiallyReliableTransferHid?: number;
   dynamicSplitEncodeUpdatesEnabled?: boolean;
-  /** Experimental receiver-side profile negotiated before the stream starts. */
-  resilientNetworkProfile?: boolean;
+  /** Receiver-side recovery profile negotiated before the stream starts. */
+  networkRecoveryProfile?: NetworkRecoveryProfile;
 }
 
 export interface NvstQualityProfile {
@@ -43,6 +45,8 @@ export interface NvstQualityProfile {
   fecRepairMinPercent: number;
   fecRepairPercent: number;
   fecRepairMaxPercent: number;
+  bitrateIirFilterFactor: number;
+  allowResolutionDownshift: boolean;
 }
 
 /**
@@ -54,9 +58,10 @@ export interface NvstQualityProfile {
  * This is applied before session creation; Chromium cannot change the bitrate
  * of the receiver-only video stream through RTCRtpSender.setParameters().
  */
-export function resolveNvstQualityProfile(params: Pick<NvstParams, "maxBitrateKbps" | "resilientNetworkProfile">): NvstQualityProfile {
+export function resolveNvstQualityProfile(params: Pick<NvstParams, "maxBitrateKbps" | "networkRecoveryProfile">): NvstQualityProfile {
   const requestedMax = Math.max(OFFICIAL_MIN_BITRATE_KBPS, Math.floor(params.maxBitrateKbps));
-  if (!params.resilientNetworkProfile) {
+  const recoveryProfile = params.networkRecoveryProfile ?? "current";
+  if (recoveryProfile === "current") {
     return {
       maxBitrateKbps: requestedMax,
       startupBitrateKbps: Math.max(OFFICIAL_MIN_BITRATE_KBPS, Math.round(requestedMax / 4)),
@@ -64,20 +69,44 @@ export function resolveNvstQualityProfile(params: Pick<NvstParams, "maxBitrateKb
       fecRepairMinPercent: 5,
       fecRepairPercent: 5,
       fecRepairMaxPercent: 35,
+      bitrateIirFilterFactor: 18,
+      allowResolutionDownshift: false,
+    };
+  }
+
+  if (recoveryProfile === "balanced") {
+    const maxBitrateKbps = Math.max(
+      OFFICIAL_MIN_BITRATE_KBPS,
+      Math.min(requestedMax, BALANCED_RECOVERY_MAX_BITRATE_KBPS),
+    );
+    return {
+      maxBitrateKbps,
+      startupBitrateKbps: Math.min(maxBitrateKbps, 6000),
+      fecRateDropWindow: 5,
+      fecRepairMinPercent: 7,
+      fecRepairPercent: 8,
+      fecRepairMaxPercent: 38,
+      bitrateIirFilterFactor: 12,
+      allowResolutionDownshift: false,
     };
   }
 
   const maxBitrateKbps = Math.max(
     OFFICIAL_MIN_BITRATE_KBPS,
-    Math.floor(requestedMax * 0.7),
+    Math.min(requestedMax, SURVIVAL_RECOVERY_MAX_BITRATE_KBPS),
   );
   return {
     maxBitrateKbps,
     startupBitrateKbps: OFFICIAL_MIN_BITRATE_KBPS,
-    fecRateDropWindow: 6,
-    fecRepairMinPercent: 8,
-    fecRepairPercent: 10,
-    fecRepairMaxPercent: 40,
+    // Fast Burst Recovery: react to a short burst in roughly half the old
+    // observation window, while retaining enough headroom that the server's
+    // recovery ramp does not immediately refill the Wi-Fi path.
+    fecRateDropWindow: 3,
+    fecRepairMinPercent: 10,
+    fecRepairPercent: 12,
+    fecRepairMaxPercent: 45,
+    bitrateIirFilterFactor: 8,
+    allowResolutionDownshift: true,
   };
 }
 
@@ -88,7 +117,9 @@ export function resolveNvstQualityProfile(params: Pick<NvstParams, "maxBitrateKb
 // into sdp.rs; native mode works with its current profile.
 export function buildNvstSdp(params: NvstParams): string {
   console.log(`[SDP] buildNvstSdp: ${params.width}x${params.height}@${params.fps}fps, codec=${params.codec}, colorQuality=${params.colorQuality}, maxBitrate=${params.maxBitrateKbps}kbps`);
-  console.log(`[SDP] buildNvstSdp: ICE ufrag=${params.credentials.ufrag}, pwd=${params.credentials.pwd.slice(0, 8)}..., fingerprint=${params.credentials.fingerprint.slice(0, 20)}...`);
+  console.log(
+    `[SDP] buildNvstSdp: ICE fields present ufrag=${Boolean(params.credentials.ufrag)}, pwd=${Boolean(params.credentials.pwd)}, fingerprint=${Boolean(params.credentials.fingerprint)}`,
+  );
   const qualityProfile = resolveNvstQualityProfile(params);
   const maxBitrate = qualityProfile.maxBitrateKbps;
   const startupBitrate = qualityProfile.startupBitrateKbps;
@@ -162,6 +193,12 @@ export function buildNvstSdp(params: NvstParams): string {
     lines.push(
       "a=vqos.drc.enable:1",
     );
+    if (qualityProfile.allowResolutionDownshift) {
+      lines.push(
+        "a=vqos.dfc.enable:1",
+        "a=vqos.dfc.adjustResAndFps:1",
+      );
+    }
   }
 
   // Video encoder settings
@@ -176,7 +213,7 @@ export function buildNvstSdp(params: NvstParams): string {
     "a=bwe.useOwdCongestionControl:1",
     "a=video.enableRtpNack:1",
     "a=vqos.bw.txRxLag.minFeedbackTxDeltaMs:200",
-    "a=vqos.drc.bitrateIirFilterFactor:18",
+    `a=vqos.drc.bitrateIirFilterFactor:${qualityProfile.bitrateIirFilterFactor}`,
     "a=video.packetSize:1140",
     // The official web client only sends packetPacing.minNumPacketsPerGroup
     // here (version/mode/enableAccurateSleep/etc. are native-client extras,

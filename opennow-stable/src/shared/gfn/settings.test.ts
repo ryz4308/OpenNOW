@@ -11,6 +11,7 @@ import {
   normalizeRecordingFps,
   normalizeRecordingResolution,
   normalizeMouseFlushIntervalPreference,
+  normalizeNetworkRecoveryProfile,
   resolveMouseFlushIntervalMs,
   resolveRuntimePlatform,
 } from "./settings";
@@ -103,8 +104,13 @@ test("normalizes and resolves the WebRTC mouse flush preference", () => {
   assert.equal(resolveMouseFlushIntervalMs(16, 4), 16);
 });
 
-test("keeps experimental network recovery disabled by default", () => {
-  assert.equal(createDefaultSettings("win32").autoRecoveryBitrate, false);
+test("normalizes the persisted network recovery profile", () => {
+  assert.equal(createDefaultSettings("win32").networkRecoveryProfile, "current");
+  assert.equal(normalizeNetworkRecoveryProfile("current"), "current");
+  assert.equal(normalizeNetworkRecoveryProfile("balanced"), "balanced");
+  assert.equal(normalizeNetworkRecoveryProfile("survival"), "survival");
+  assert.equal(normalizeNetworkRecoveryProfile(true), "current");
+  assert.equal(normalizeNetworkRecoveryProfile("invalid"), "current");
 });
 
 test("normalizes recording settings to supported performance bounds", () => {

@@ -100,7 +100,7 @@ export function useSignalingEvents({
         mouseSensitivity: settings.mouseSensitivity,
         mouseAcceleration: settings.mouseAcceleration,
         mouseFlushIntervalMs: settings.mouseFlushIntervalMs,
-        autoRecoveryBitrate: settings.autoRecoveryBitrate,
+        networkRecoveryProfile: settings.networkRecoveryProfile,
         keyboardLayout: settings.keyboardLayout,
         clipboardPaste: settings.clipboardPaste,
         readClipboardText: readStreamClipboardText,
@@ -218,7 +218,11 @@ export function useSignalingEvents({
     };
 
     const unsubscribe = window.openNow.onSignalingEvent(async (event: MainToRendererSignalingEvent) => {
-      console.log(`[App] Signaling event: ${event.type}`, event.type === "offer" ? `(SDP ${event.sdp.length} chars)` : "", event.type === "remote-ice" ? event.candidate : "");
+      console.log(
+        `[App] Signaling event: ${event.type}`,
+        event.type === "offer" ? `(SDP ${event.sdp.length} chars)` : "",
+        event.type === "remote-ice" ? "(candidate received)" : "",
+      );
       try {
         if (event.type === "offer") {
           pendingControlledDisconnectsRef.current = 0;
@@ -261,13 +265,14 @@ export function useSignalingEvents({
               });
             }, SIGNALING_REMOTE_ICE_GRACE_MS);
           }
-          console.log("[App] Active session for offer:", JSON.stringify({
-            sessionId: activeSession.sessionId,
-            serverIp: activeSession.serverIp,
-            signalingServer: activeSession.signalingServer,
-            mediaConnectionInfo: activeSession.mediaConnectionInfo,
-            iceServersCount: activeSession.iceServers?.length,
-          }));
+          console.log("[App] Active session ready for offer", {
+            status: activeSession.status,
+            sessionIdPresent: Boolean(activeSession.sessionId),
+            serverIpPresent: Boolean(activeSession.serverIp),
+            signalingServerPresent: Boolean(activeSession.signalingServer),
+            mediaConnectionInfoPresent: Boolean(activeSession.mediaConnectionInfo),
+            iceServersCount: activeSession.iceServers?.length ?? 0,
+          });
 
           const client = ensureWebRtcClient();
 
@@ -289,13 +294,10 @@ export function useSignalingEvents({
             setStreamStatus("streaming");
             markDiscordStreamStarted();
             scheduleStableRecoveryReset(activeSession.sessionId);
-            console.log(
-              "[Stream] Offer applied; use [WebRTC] logs for ICE/video dimensions. signalingServer=%s media=%s",
-              activeSession.signalingServer,
-              activeSession.mediaConnectionInfo
-                ? `${activeSession.mediaConnectionInfo.ip}:${activeSession.mediaConnectionInfo.port}`
-                : "n/a",
-            );
+            console.log("[Stream] Offer applied; use [WebRTC] logs for sanitized ICE/video diagnostics", {
+              signalingServerPresent: Boolean(activeSession.signalingServer),
+              mediaConnectionInfoPresent: Boolean(activeSession.mediaConnectionInfo),
+            });
           }
         } else if (event.type === "native-stream-started") {
           console.log("[App] Native streamer started:", event.message ?? "");

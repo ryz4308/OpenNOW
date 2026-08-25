@@ -26,6 +26,8 @@ export type ErrorReportingConsent = "unset" | "granted" | "denied";
 export const MOUSE_FLUSH_INTERVAL_OPTIONS = [4, 8, 16] as const;
 export type MouseFlushIntervalMs = typeof MOUSE_FLUSH_INTERVAL_OPTIONS[number];
 export type MouseFlushIntervalPreference = "auto" | MouseFlushIntervalMs;
+export const NETWORK_RECOVERY_PROFILES = ["current", "balanced", "survival"] as const;
+export type NetworkRecoveryProfile = typeof NETWORK_RECOVERY_PROFILES[number];
 export const RECORDING_RESOLUTION_OPTIONS = ["720p", "1080p", "1440p"] as const;
 export type RecordingResolution = typeof RECORDING_RESOLUTION_OPTIONS[number];
 export const RECORDING_FPS_OPTIONS = [30, 60] as const;
@@ -97,8 +99,8 @@ export interface Settings {
   mouseAcceleration: number;
   /** WebRTC mouse-movement coalescing interval; auto preserves platform detection. */
   mouseFlushIntervalMs: MouseFlushIntervalPreference;
-  /** WebRTC-only experimental recovery mode that lowers the bitrate ceiling under network loss. */
-  autoRecoveryBitrate: boolean;
+  /** WebRTC recovery envelope negotiated before a new connection or Resume. */
+  networkRecoveryProfile: NetworkRecoveryProfile;
   shortcutToggleStats: string;
   shortcutTogglePointerLock: string;
   shortcutToggleFullscreen: string;
@@ -241,6 +243,12 @@ export function normalizeRecordingResolution(raw: unknown): RecordingResolution 
     : DEFAULT_RECORDING_RESOLUTION;
 }
 
+export function normalizeNetworkRecoveryProfile(raw: unknown): NetworkRecoveryProfile {
+  return NETWORK_RECOVERY_PROFILES.includes(raw as NetworkRecoveryProfile)
+    ? raw as NetworkRecoveryProfile
+    : "current";
+}
+
 export function normalizeRecordingFps(raw: unknown): RecordingFps {
   const value = Number(raw);
   if (!Number.isFinite(value)) {
@@ -322,7 +330,7 @@ export function createDefaultSettings(platform: string): Settings {
     mouseSensitivity: 1,
     mouseAcceleration: 1,
     mouseFlushIntervalMs: "auto",
-    autoRecoveryBitrate: false,
+    networkRecoveryProfile: "current",
     ...shortcuts.bindings,
     microphoneMode: "disabled",
     microphoneDeviceId: "",

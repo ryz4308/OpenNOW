@@ -288,10 +288,10 @@ export function App(): JSX.Element {
       requestedCodec: settings.codec,
       targetFps: settings.fps,
       requestedMaxBitrateMbps: settings.maxBitrateMbps,
-      resilientNetworkProfile: settings.autoRecoveryBitrate,
+      resilientNetworkProfile: settings.networkRecoveryProfile,
     });
   }, [
-    settings.autoRecoveryBitrate,
+    settings.networkRecoveryProfile,
     settings.codec,
     settings.fps,
     settings.maxBitrateMbps,
@@ -3102,6 +3102,7 @@ export function App(): JSX.Element {
               platformStore={streamingStore ?? undefined}
               status={loadingStatus}
               queuePosition={queuePosition}
+              queueEstimateKey={session?.zone ?? "default"}
               adState={effectiveAdState}
               activeAd={activeQueueAd}
               activeAdMediaUrl={activeQueueAdMediaUrl}

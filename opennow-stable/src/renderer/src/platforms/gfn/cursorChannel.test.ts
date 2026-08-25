@@ -7,6 +7,7 @@ import {
   cursorDevicePixelRatioScale,
   nativeCursorStyle,
   parseGfnCursorChannelMessage,
+  remapCursorPositionForViewport,
   shouldApplyCursorChannelPosition,
 } from "./cursorChannel";
 
@@ -96,4 +97,23 @@ test("shouldApplyCursorChannelPosition only trusts position when cursor becomes 
   assert.equal(shouldApplyCursorChannelPosition(true, true, position), false);
   assert.equal(shouldApplyCursorChannelPosition(false, false, position), false);
   assert.equal(shouldApplyCursorChannelPosition(false, true), false);
+});
+
+test("remapCursorPositionForViewport preserves normalized cursor position", () => {
+  assert.deepEqual(
+    remapCursorPositionForViewport(
+      { x: 480, y: 270 },
+      { width: 960, height: 540 },
+      { width: 1920, height: 1080 },
+    ),
+    { x: 960, y: 540 },
+  );
+  assert.deepEqual(
+    remapCursorPositionForViewport(
+      { x: 1200, y: -20 },
+      { width: 960, height: 540 },
+      { width: 1280, height: 720 },
+    ),
+    { x: 1280, y: 0 },
+  );
 });

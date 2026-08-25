@@ -23,6 +23,7 @@ import {
   normalizeRecordingFps,
   normalizeRecordingResolution,
   normalizeMouseFlushIntervalPreference,
+  normalizeNetworkRecoveryProfile,
 } from "@shared/gfn";
 import type { StatsOverlayPosition } from "@shared/gfn";
 
@@ -140,10 +141,12 @@ export class SettingsManager {
       const content = readFileSync(this.settingsPath, "utf-8");
       type PersistedSettings = Partial<Settings> & {
         sessionTimeRemainingDisplay?: unknown;
+        autoRecoveryBitrate?: unknown;
       };
       const parsed = JSON.parse(content) as PersistedSettings;
       const {
         sessionTimeRemainingDisplay: legacySessionTimeDisplay,
+        autoRecoveryBitrate: legacyAutoRecoveryBitrate,
         ...parsedSettings
       } = parsed;
 
@@ -153,7 +156,16 @@ export class SettingsManager {
         ...parsedSettings,
       };
 
-      let migrated = this.migrateLegacyShortcutDefaults(merged);
+      let migrated = false;
+      if (parsedSettings.networkRecoveryProfile === undefined && legacyAutoRecoveryBitrate === true) {
+        merged.networkRecoveryProfile = "balanced";
+        migrated = true;
+      }
+      if (legacyAutoRecoveryBitrate !== undefined) {
+        migrated = true;
+      }
+
+      migrated = this.migrateLegacyShortcutDefaults(merged) || migrated;
       migrated = this.enforceCompatibility(merged) || migrated;
 
       const accentColorBefore = merged.appAccentColor;
@@ -318,8 +330,9 @@ export class SettingsManager {
       migrated = true;
     }
 
-    if (typeof settings.autoRecoveryBitrate !== "boolean") {
-      settings.autoRecoveryBitrate = false;
+    const networkRecoveryProfile = normalizeNetworkRecoveryProfile(settings.networkRecoveryProfile);
+    if (settings.networkRecoveryProfile !== networkRecoveryProfile) {
+      settings.networkRecoveryProfile = networkRecoveryProfile;
       migrated = true;
     }
 

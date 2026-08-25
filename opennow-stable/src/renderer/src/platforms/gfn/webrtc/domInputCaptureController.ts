@@ -16,7 +16,10 @@ import {
   type InputEncoder,
 } from "../inputProtocol";
 import { FULLSCREEN_KEYBOARD_LOCK_CODES } from "../keyboardLock";
-import { GfnCursorOverlayController } from "../cursorChannel";
+import {
+  GfnCursorOverlayController,
+  type CursorViewportDiagnostics,
+} from "../cursorChannel";
 import {
   canForwardStreamPointerInput,
   didStreamPointerLockExit,
@@ -59,6 +62,20 @@ export interface MouseInputDiagnostics {
   residualMagnitude: number;
   adaptiveFlushActive: boolean;
 }
+
+const EMPTY_CURSOR_VIEWPORT_DIAGNOSTICS: CursorViewportDiagnostics = {
+  visible: false,
+  pointerLocked: false,
+  viewportWidth: 0,
+  viewportHeight: 0,
+  videoRectWidth: 0,
+  videoRectHeight: 0,
+  sourceWidth: 0,
+  sourceHeight: 0,
+  devicePixelRatio: 1,
+  resyncCount: 0,
+  lastResyncReason: "disabled",
+};
 
 const MOUSE_FLUSH_FAST_MS = 4;
 const MOUSE_FLUSH_NORMAL_MS = 8;
@@ -145,7 +162,10 @@ export class DomInputCaptureController {
       return;
     }
     if (!this.cursorOverlay) {
-      this.cursorOverlay = new GfnCursorOverlayController(this.dependencies.videoElement);
+      this.cursorOverlay = new GfnCursorOverlayController(
+        this.dependencies.videoElement,
+        this.dependencies.log,
+      );
       this.cursorOverlay.setFallbackResolution(parseResolution(this.dependencies.getCurrentResolution()));
       const lockElement = document.pointerLockElement;
       const pointerLockTarget = this.dependencies.videoElement.parentElement;
@@ -216,6 +236,10 @@ export class DomInputCaptureController {
       residualMagnitude: Math.hypot(this.pendingMouseDxFloat, this.pendingMouseDyFloat),
       adaptiveFlushActive: this.mouseAdaptiveFlushActive,
     };
+  }
+
+  getCursorViewportDiagnostics(): CursorViewportDiagnostics {
+    return this.cursorOverlay?.getViewportDiagnostics() ?? EMPTY_CURSOR_VIEWPORT_DIAGNOSTICS;
   }
 
   setAdaptiveFlushInterval(intervalMs: number, active: boolean): void {
@@ -448,7 +472,7 @@ export class DomInputCaptureController {
     const pointerLockTarget = getStreamPointerLockTarget(videoElement);
     const originalPointerLockTargetTabIndex = pointerLockTarget.getAttribute("tabindex");
     if (this.isNativeCursorOverlayEnabled()) {
-      this.cursorOverlay = new GfnCursorOverlayController(videoElement);
+      this.cursorOverlay = new GfnCursorOverlayController(videoElement, this.dependencies.log);
       this.cursorOverlay.setFallbackResolution(parseResolution(this.dependencies.getCurrentResolution()));
     } else {
       this.cursorOverlay = null;

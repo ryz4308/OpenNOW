@@ -9,6 +9,7 @@ import type {
   NativeTransitionDiagnostics,
   KeyboardLayout,
   MouseFlushIntervalPreference,
+  NetworkRecoveryProfile,
 } from "@shared/gfn";
 
 import {
@@ -175,8 +176,8 @@ interface ClientOptions {
   mouseAcceleration?: number;
   /** WebRTC mouse-movement coalescing interval override. */
   mouseFlushIntervalMs?: MouseFlushIntervalPreference;
-  /** WebRTC-only SDP profile negotiated before the stream starts. */
-  autoRecoveryBitrate?: boolean;
+  /** WebRTC recovery profile negotiated before a new connection or Resume. */
+  networkRecoveryProfile?: NetworkRecoveryProfile;
   /** Selected GFN keyboard layout for remote physical OEM key mapping. */
   keyboardLayout?: KeyboardLayout;
   /** Enable official GFN clipboard custom-message paste support. */
@@ -441,6 +442,17 @@ export class GfnWebRtcClient {
     mousePacketsPerSecond: 0,
     mouseResidualMagnitude: 0,
     mouseAdaptiveFlushActive: false,
+    cursorOverlayVisible: false,
+    cursorPointerLocked: false,
+    cursorViewportWidth: 0,
+    cursorViewportHeight: 0,
+    cursorVideoRectWidth: 0,
+    cursorVideoRectHeight: 0,
+    cursorSourceWidth: 0,
+    cursorSourceHeight: 0,
+    cursorDevicePixelRatio: 1,
+    cursorViewportResyncCount: 0,
+    cursorViewportLastResyncReason: "disabled",
     lagReason: "unknown",
     lagReasonDetail: "Waiting for stream stats",
     gpuType: "",
@@ -897,6 +909,17 @@ export class GfnWebRtcClient {
       mousePacketsPerSecond: mouseDiagnostics.packetsPerSecond,
       mouseResidualMagnitude: 0,
       mouseAdaptiveFlushActive: mouseDiagnostics.adaptiveFlushActive,
+      cursorOverlayVisible: false,
+      cursorPointerLocked: false,
+      cursorViewportWidth: 0,
+      cursorViewportHeight: 0,
+      cursorVideoRectWidth: 0,
+      cursorVideoRectHeight: 0,
+      cursorSourceWidth: 0,
+      cursorSourceHeight: 0,
+      cursorDevicePixelRatio: 1,
+      cursorViewportResyncCount: 0,
+      cursorViewportLastResyncReason: "disabled",
       lagReason: "unknown",
       lagReasonDetail: "Waiting for stream stats",
       gpuType: this.gpuType,
@@ -908,10 +931,15 @@ export class GfnWebRtcClient {
       decoderPressureActive: false,
       decoderRecoveryAttempts: 0,
       decoderRecoveryAction: "none",
-      networkRecoveryEnabled: this.options.autoRecoveryBitrate === true,
-      networkRecoveryActive: this.options.autoRecoveryBitrate === true,
+      networkRecoveryEnabled: this.options.networkRecoveryProfile !== undefined
+        && this.options.networkRecoveryProfile !== "current",
+      networkRecoveryActive: this.options.networkRecoveryProfile !== undefined
+        && this.options.networkRecoveryProfile !== "current",
       networkRecoveryAttempts: 0,
-      networkRecoveryAction: this.options.autoRecoveryBitrate === true ? "pending next WebRTC offer" : "none",
+      networkRecoveryAction: this.options.networkRecoveryProfile !== undefined
+        && this.options.networkRecoveryProfile !== "current"
+        ? `pending ${this.options.networkRecoveryProfile} WebRTC offer`
+        : "none",
       networkRecoveryTargetBitrateKbps: 0,
       nativeRequestedFps: undefined,
       nativeCapsFramerate: undefined,
@@ -952,7 +980,9 @@ export class GfnWebRtcClient {
     this.decoderPressureController.initializeBitrate(settings.maxBitrateKbps);
     const resilientProfile = resolveNvstQualityProfile({
       maxBitrateKbps: settings.maxBitrateKbps,
-      resilientNetworkProfile: this.options.autoRecoveryBitrate === true && !nativeRendererActive,
+      networkRecoveryProfile: nativeRendererActive
+        ? "current"
+        : this.options.networkRecoveryProfile ?? "current",
     });
     this.resilientProfileTargetBitrateKbps = resilientProfile.maxBitrateKbps;
 
@@ -968,11 +998,12 @@ export class GfnWebRtcClient {
       this.decoderPressureController.targetBitrateKbps,
       resilientProfile.maxBitrateKbps,
     );
-    this.diagnostics.networkRecoveryEnabled = this.options.autoRecoveryBitrate === true && !nativeRendererActive;
+    this.diagnostics.networkRecoveryEnabled = !nativeRendererActive
+      && (this.options.networkRecoveryProfile ?? "current") !== "current";
     this.diagnostics.networkRecoveryActive = this.diagnostics.networkRecoveryEnabled;
     this.diagnostics.networkRecoveryAttempts = 0;
     this.diagnostics.networkRecoveryAction = this.diagnostics.networkRecoveryEnabled
-      ? "SDP profile applied"
+      ? "Fast Burst Recovery SDP applied"
       : "none";
     this.diagnostics.networkRecoveryTargetBitrateKbps = resilientProfile.maxBitrateKbps;
     this.diagnostics.decodeFps = nativeRendererActive ? settings.fps : 0;
@@ -1298,6 +1329,18 @@ export class GfnWebRtcClient {
     this.diagnostics.mouseFlushIntervalMs = mouseDiagnostics.flushIntervalMs;
     this.diagnostics.mousePacketsPerSecond = mouseDiagnostics.packetsPerSecond;
     this.diagnostics.mouseResidualMagnitude = mouseDiagnostics.residualMagnitude;
+    const cursorDiagnostics = this.domInputController.getCursorViewportDiagnostics();
+    this.diagnostics.cursorOverlayVisible = cursorDiagnostics.visible;
+    this.diagnostics.cursorPointerLocked = cursorDiagnostics.pointerLocked;
+    this.diagnostics.cursorViewportWidth = cursorDiagnostics.viewportWidth;
+    this.diagnostics.cursorViewportHeight = cursorDiagnostics.viewportHeight;
+    this.diagnostics.cursorVideoRectWidth = cursorDiagnostics.videoRectWidth;
+    this.diagnostics.cursorVideoRectHeight = cursorDiagnostics.videoRectHeight;
+    this.diagnostics.cursorSourceWidth = cursorDiagnostics.sourceWidth;
+    this.diagnostics.cursorSourceHeight = cursorDiagnostics.sourceHeight;
+    this.diagnostics.cursorDevicePixelRatio = cursorDiagnostics.devicePixelRatio;
+    this.diagnostics.cursorViewportResyncCount = cursorDiagnostics.resyncCount;
+    this.diagnostics.cursorViewportLastResyncReason = cursorDiagnostics.lastResyncReason;
 
     // An explicit test preference must remain fixed so 4/8/16 ms runs are
     // comparable. Auto mode keeps the existing official behavior: PR mouse uses
@@ -1823,9 +1866,7 @@ export class GfnWebRtcClient {
     }
 
     if (this.remoteIceEndpoint) {
-      this.log(
-        `Rewrote remote ICE candidate endpoint to mediaConnectionInfo ${this.remoteIceEndpoint.ip}:${this.remoteIceEndpoint.port}`,
-      );
+      this.log("Rewrote remote ICE candidate to the active CloudMatch media endpoint");
     }
 
     return {
@@ -2060,23 +2101,17 @@ export class GfnWebRtcClient {
     this.cleanupPeerConnection();
     this.remoteIceEndpoint = session.mediaConnectionInfo ?? null;
     this.log("=== handleOffer START ===");
-    this.log(`Session: id=${session.sessionId}, status=${session.status}, serverIp=${session.serverIp}`);
-    this.log(`Signaling: server=${session.signalingServer}, url=${session.signalingUrl}`);
-    this.log(`MediaConnectionInfo: ${session.mediaConnectionInfo ? `ip=${session.mediaConnectionInfo.ip}, port=${session.mediaConnectionInfo.port}` : "NONE"}`);
+    this.log(`Session: status=${session.status}, idPresent=${Boolean(session.sessionId)}`);
+    this.log(`Signaling: serverPresent=${Boolean(session.signalingServer)}, urlPresent=${Boolean(session.signalingUrl)}`);
+    this.log(`MediaConnectionInfo: present=${Boolean(session.mediaConnectionInfo)}, usage=${session.mediaConnectionInfo?.usage ?? "none"}`);
     this.log(
       `Settings: codec=${settings.codec}, colorQuality=${settings.colorQuality}, resolution=${settings.resolution}, fps=${settings.fps}, maxBitrate=${settings.maxBitrateKbps}kbps`,
     );
     if (session.negotiatedStreamProfile) {
       this.log(`Negotiated stream profile override: ${JSON.stringify(session.negotiatedStreamProfile)}`);
     }
-    this.log(`ICE servers: ${session.iceServers.length} (${session.iceServers.map(s => s.urls.join(",")).join(" | ")})`);
+    this.log(`ICE servers: ${session.iceServers.length}`);
     this.log(`Offer SDP length: ${offerSdp.length} chars`);
-    // Log full offer SDP for ICE debugging
-    this.log(`=== FULL OFFER SDP START ===`);
-    for (const line of offerSdp.split(/\r?\n/)) {
-      this.log(`  SDP> ${line}`);
-    }
-    this.log(`=== FULL OFFER SDP END ===`);
 
     this.riInputCapabilities = parseRiInputCapabilities(offerSdp);
     this.inputChannelPolicyController.updateCapabilities(this.riInputCapabilities);
@@ -2127,7 +2162,9 @@ export class GfnWebRtcClient {
       if (!payload.candidate) {
         return;
       }
-      this.log(`Local ICE candidate: ${payload.candidate}`);
+      this.log(
+        `Local ICE candidate: type=${event.candidate.type ?? "unknown"}, protocol=${event.candidate.protocol ?? "unknown"}`,
+      );
       const candidate: IceCandidatePayload = {
         candidate: payload.candidate,
         sdpMid: payload.sdpMid,
@@ -2194,10 +2231,9 @@ export class GfnWebRtcClient {
 
     pc.onicecandidateerror = (event: Event) => {
       const e = event as RTCPeerConnectionIceErrorEvent;
-      const hostCandidate = "hostCandidate" in e
-        ? (e as RTCPeerConnectionIceErrorEvent & { hostCandidate?: string }).hostCandidate
-        : undefined;
-      this.log(`ICE candidate error: ${e.errorCode} ${e.errorText} (${e.url ?? "no url"}) hostCandidate=${hostCandidate ?? "?"}`);
+      const hasHostCandidate = "hostCandidate" in e
+        && Boolean((e as RTCPeerConnectionIceErrorEvent & { hostCandidate?: string }).hostCandidate);
+      this.log(`ICE candidate error: code=${e.errorCode}, urlPresent=${Boolean(e.url)}, hostCandidatePresent=${hasHostCandidate}`);
     };
 
     pc.oniceconnectionstatechange = () => {
@@ -2233,7 +2269,7 @@ export class GfnWebRtcClient {
     if (webRtcMediaConnection?.ip) {
       const serverIpForSdp = webRtcMediaConnection.ip;
       processedOffer = fixServerIp(processedOffer, serverIpForSdp);
-      this.log(`Fixed server IP in SDP offer: ${serverIpForSdp}`);
+      this.log("Applied CloudMatch media endpoint to SDP offer");
       // Log any remaining 0.0.0.0 references after fix
       const remaining = (processedOffer.match(/0\.0\.0\.0/g) ?? []).length;
       if (remaining > 0) {
@@ -2243,12 +2279,12 @@ export class GfnWebRtcClient {
       if (rewritten.replacements > 0) {
         processedOffer = rewritten.sdp;
         this.log(
-          `Rewrote ${rewritten.replacements} server ICE candidate endpoint(s) to mediaConnectionInfo ${webRtcMediaConnection.ip}:${webRtcMediaConnection.port}`,
+          `Rewrote ${rewritten.replacements} server ICE candidate endpoint(s) to CloudMatch media endpoint`,
         );
       }
     } else if (session.mediaConnectionInfo) {
       this.log(
-        `Skipping SDP ICE rewrite for mediaConnectionInfo usage=${session.mediaConnectionInfo.usage ?? "unknown"} (${session.mediaConnectionInfo.ip}:${session.mediaConnectionInfo.port})`,
+        `Skipping SDP ICE rewrite for mediaConnectionInfo usage=${session.mediaConnectionInfo.usage ?? "unknown"}`,
       );
     }
 
@@ -2346,7 +2382,7 @@ export class GfnWebRtcClient {
 
     const qualityProfile = resolveNvstQualityProfile({
       maxBitrateKbps: settings.maxBitrateKbps,
-      resilientNetworkProfile: this.options.autoRecoveryBitrate === true,
+      networkRecoveryProfile: this.options.networkRecoveryProfile ?? "current",
     });
 
     if (answer.sdp) {
@@ -2375,7 +2411,7 @@ export class GfnWebRtcClient {
     await this.flushQueuedCandidates();
 
     const credentials = extractIceCredentials(finalSdp);
-    this.log(`Extracted ICE credentials: ufrag=${credentials.ufrag}, pwd=${credentials.pwd.slice(0, 8)}...`);
+    this.log(`Extracted ICE credentials: present=${Boolean(credentials.ufrag && credentials.pwd)}`);
     const { width, height } = parseResolution(settings.resolution);
 
     const nvstSdp = buildNvstSdp({
@@ -2392,12 +2428,12 @@ export class GfnWebRtcClient {
       credentials,
       dynamicSplitEncodeUpdatesEnabled:
         settings.nativeTransitionDiagnostics?.disableDynamicSplitEncodeUpdates !== true,
-      resilientNetworkProfile: this.options.autoRecoveryBitrate === true,
+      networkRecoveryProfile: this.options.networkRecoveryProfile ?? "current",
     });
 
-    if (this.options.autoRecoveryBitrate === true) {
+    if ((this.options.networkRecoveryProfile ?? "current") !== "current") {
       this.log(
-        `Resilient SDP profile: requestedMax=${settings.maxBitrateKbps}kbps, negotiatedMax=${qualityProfile.maxBitrateKbps}kbps, startup=${qualityProfile.startupBitrateKbps}kbps, FEC=${qualityProfile.fecRepairMinPercent}/${qualityProfile.fecRepairPercent}/${qualityProfile.fecRepairMaxPercent}%`,
+        `Recovery SDP (${this.options.networkRecoveryProfile}): requestedMax=${settings.maxBitrateKbps}kbps, negotiatedMax=${qualityProfile.maxBitrateKbps}kbps, startup=${qualityProfile.startupBitrateKbps}kbps, rateDropWindow=${qualityProfile.fecRateDropWindow}, bitrateIir=${qualityProfile.bitrateIirFilterFactor}, FEC=${qualityProfile.fecRepairMinPercent}/${qualityProfile.fecRepairPercent}/${qualityProfile.fecRepairMaxPercent}%, resolutionDownshift=${qualityProfile.allowResolutionDownshift}`,
       );
     }
 
@@ -2423,9 +2459,7 @@ export class GfnWebRtcClient {
 
   async addRemoteCandidate(candidate: IceCandidatePayload): Promise<void> {
     const sdpMLineIndex = candidate.sdpMLineIndex ?? (candidate.sdpMid == null ? 0 : undefined);
-    this.log(
-      `Remote ICE candidate received: ${candidate.candidate} (sdpMid=${candidate.sdpMid}, sdpMLineIndex=${sdpMLineIndex})`,
-    );
+    this.log(`Remote ICE candidate received (sdpMidPresent=${candidate.sdpMid != null}, sdpMLineIndex=${sdpMLineIndex})`);
     const init: RTCIceCandidateInit = {
       candidate: candidate.candidate,
       sdpMid: candidate.sdpMid ?? undefined,
