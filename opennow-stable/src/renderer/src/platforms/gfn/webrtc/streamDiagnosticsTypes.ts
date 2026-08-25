@@ -1,5 +1,6 @@
 import type { NativeQueueMode } from "@shared/gfn";
 import type { MicState } from "../microphoneManager";
+import type { NetworkRecoveryPhase } from "./networkRecoveryController";
 
 export interface StreamDiagnostics {
   // Connection state
@@ -94,6 +95,7 @@ export interface StreamDiagnostics {
   decoderRecoveryAction: string;
   networkRecoveryEnabled: boolean;
   networkRecoveryActive: boolean;
+  networkRecoveryState: NetworkRecoveryPhase;
   networkRecoveryAttempts: number;
   networkRecoveryAction: string;
   networkRecoveryTargetBitrateKbps: number;

@@ -10,6 +10,7 @@ import {
 } from "./decoderPressureController";
 import {
   NetworkRecoveryController,
+  NETWORK_KEYFRAME_COOLDOWN_MS,
   classifyNetworkRecoverySample,
   type NetworkRecoveryState,
 } from "./networkRecoveryController";
@@ -156,6 +157,7 @@ test("network recovery does not downshift from low stream fps alone", () => {
 test("network recovery steps bitrate down under repeated loss and slowly restores it", async () => {
   const states: NetworkRecoveryState[] = [];
   const requestedBitrates: number[] = [];
+  let keyframeRequests = 0;
   let now = 10_000;
   const controller = new NetworkRecoveryController({
     log: () => {},
@@ -163,11 +165,14 @@ test("network recovery steps bitrate down under repeated loss and slowly restore
       requestedBitrates.push(kbps);
       return true;
     },
+    requestKeyframe: async () => {
+      keyframeRequests++;
+    },
     onStateChange: (state) => states.push(state),
     now: () => now,
   });
   controller.initializeBitrate(20_000);
-  controller.setEnabled(true);
+  controller.setProfile("balanced");
 
   const lossySample = {
     packetLossPercent: 14,
@@ -183,13 +188,11 @@ test("network recovery steps bitrate down under repeated loss and slowly restore
   now += 3_000;
   await controller.recover(lossySample);
   assert.deepEqual(requestedBitrates, [5_000]);
-  assert.deepEqual(states.at(-1), {
-    enabled: true,
-    active: true,
-    recoveryAttempts: 1,
-    recoveryAction: "bitrate_step_down",
-    targetBitrateKbps: 5_000,
-  });
+  assert.equal(keyframeRequests, 1);
+  assert.equal(states.at(-1)?.phase, "BURST");
+  assert.equal(states.at(-1)?.recoveryAction, "bitrate_step_down");
+  assert.equal(states.at(-1)?.targetBitrateKbps, 5_000);
+  assert.equal(states.at(-1)?.liveBitrateSupported, true);
 
   now += 31_000;
   const stableSample = {
@@ -204,16 +207,12 @@ test("network recovery steps bitrate down under repeated loss and slowly restore
   }
 
   assert.deepEqual(requestedBitrates, [5_000, 6_000]);
-  assert.deepEqual(states.at(-1), {
-    enabled: true,
-    active: true,
-    recoveryAttempts: 1,
-    recoveryAction: "bitrate_step_up",
-    targetBitrateKbps: 6_000,
-  });
+  assert.equal(states.at(-1)?.phase, "RECOVERING");
+  assert.equal(states.at(-1)?.recoveryAction, "bitrate_step_up");
+  assert.equal(states.at(-1)?.targetBitrateKbps, 6_000);
 });
 
-test("network recovery reports unavailable when live bitrate update is not supported", async () => {
+test("network recovery remembers live bitrate is unavailable and never retries it", async () => {
   const states: NetworkRecoveryState[] = [];
   const requestedBitrates: number[] = [];
   let now = 10_000;
@@ -223,11 +222,12 @@ test("network recovery reports unavailable when live bitrate update is not suppo
       requestedBitrates.push(kbps);
       return false;
     },
+    requestKeyframe: async () => {},
     onStateChange: (state) => states.push(state),
     now: () => now,
   });
   controller.initializeBitrate(20_000);
-  controller.setEnabled(true);
+  controller.setProfile("survival");
 
   await controller.recover({
     packetLossPercent: 0,
@@ -245,14 +245,82 @@ test("network recovery reports unavailable when live bitrate update is not suppo
     decodeFps: 60,
   });
 
+  for (let index = 0; index < 5; index++) {
+    now += 3_000;
+    await controller.recover({
+      packetLossPercent: 0,
+      rttMs: 220,
+      jitterMs: 5,
+      receiveFps: 60,
+      decodeFps: 60,
+    });
+  }
+
   assert.deepEqual(requestedBitrates, [5_000]);
-  assert.deepEqual(states.at(-1), {
-    enabled: true,
-    active: true,
-    recoveryAttempts: 0,
-    recoveryAction: "unavailable",
-    targetBitrateKbps: 20_000,
+  assert.equal(states.at(-1)?.phase, "BURST");
+  assert.equal(states.at(-1)?.recoveryAction, "live_bitrate_unavailable");
+  assert.equal(states.at(-1)?.targetBitrateKbps, 20_000);
+  assert.equal(states.at(-1)?.liveBitrateSupported, false);
+});
+
+test("network recovery requests one keyframe per burst with a 25 second cooldown", async () => {
+  const keyframeRequests: string[] = [];
+  let now = 10_000;
+  const controller = new NetworkRecoveryController({
+    log: () => {},
+    setMaxBitrateKbps: async () => false,
+    requestKeyframe: async (request) => {
+      keyframeRequests.push(request.reason);
+    },
+    onStateChange: () => {},
+    now: () => now,
   });
+  controller.initializeBitrate(20_000);
+  controller.setProfile("balanced");
+  const bad = {
+    packetLossPercent: 12,
+    rttMs: 55,
+    jitterMs: 5,
+    receiveFps: 60,
+    decodeFps: 60,
+  };
+  const stable = { ...bad, packetLossPercent: 0 };
+
+  await controller.recover(bad);
+  await controller.recover(bad);
+  await controller.recover(bad);
+  assert.deepEqual(keyframeRequests, ["network_critical_loss"]);
+
+  for (let index = 0; index < 20; index++) {
+    await controller.recover(stable);
+  }
+  now += NETWORK_KEYFRAME_COOLDOWN_MS - 1;
+  await controller.recover(bad);
+  await controller.recover(bad);
+  assert.equal(keyframeRequests.length, 1);
+
+  for (let index = 0; index < 20; index++) {
+    await controller.recover(stable);
+  }
+  now += 1;
+  await controller.recover(bad);
+  await controller.recover(bad);
+  assert.equal(keyframeRequests.length, 2);
+});
+
+test("network recovery exposes reconnecting and recovering transitions", () => {
+  const states: NetworkRecoveryState[] = [];
+  const controller = new NetworkRecoveryController({
+    log: () => {},
+    setMaxBitrateKbps: async () => true,
+    requestKeyframe: async () => {},
+    onStateChange: (state) => states.push(state),
+  });
+  controller.setProfile("balanced");
+  controller.markReconnecting("ice_failed");
+  assert.equal(states.at(-1)?.phase, "RECONNECTING");
+  controller.markReconnected();
+  assert.equal(states.at(-1)?.phase, "RECOVERING");
 });
 
 test("input policy preserves native, partially-reliable, and fallback routes", () => {

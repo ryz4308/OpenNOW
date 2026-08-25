@@ -282,9 +282,7 @@ export function StreamStatsHud({
     if (stats.networkRecoveryEnabled) {
       lines.push(
         t("stream.stats.advancedNetworkRecovery", {
-          state: stats.networkRecoveryActive
-            ? t("stream.stats.activeValue")
-            : t("stream.stats.idleValue"),
+          state: stats.networkRecoveryState,
           attempts: stats.networkRecoveryAttempts,
           action: stats.networkRecoveryAction,
           bitrate: formatOptionalBitrate(stats.networkRecoveryTargetBitrateKbps),

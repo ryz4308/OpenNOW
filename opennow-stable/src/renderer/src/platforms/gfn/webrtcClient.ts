@@ -67,6 +67,7 @@ import { deriveStreamSessionDiagnostics } from "./webrtc/sessionDiagnostics";
 import {
   DecoderPressureController,
 } from "./webrtc/decoderPressureController";
+import { NetworkRecoveryController } from "./webrtc/networkRecoveryController";
 import {
   InputChannelPolicyController,
   type RiInputCapabilities,
@@ -367,6 +368,7 @@ export class GfnWebRtcClient {
   private inputQueueDropCount = 0;
 
   private readonly decoderPressureController: DecoderPressureController;
+  private readonly networkRecoveryController: NetworkRecoveryController;
   private resilientProfileTargetBitrateKbps = 0;
   private readonly inputChannelPolicyController: InputChannelPolicyController;
   private readonly gamepadController: GamepadController;
@@ -466,6 +468,7 @@ export class GfnWebRtcClient {
     decoderRecoveryAction: "none",
     networkRecoveryEnabled: false,
     networkRecoveryActive: false,
+    networkRecoveryState: "STABLE",
     networkRecoveryAttempts: 0,
     networkRecoveryAction: "none",
     networkRecoveryTargetBitrateKbps: 0,
@@ -493,6 +496,19 @@ export class GfnWebRtcClient {
         this.diagnostics.decoderPressureActive = state.active;
         this.diagnostics.decoderRecoveryAttempts = state.recoveryAttempts;
         this.diagnostics.decoderRecoveryAction = state.recoveryAction;
+      },
+    });
+    this.networkRecoveryController = new NetworkRecoveryController({
+      log: (message) => this.log(message),
+      setMaxBitrateKbps: (kbps) => this.setMaxBitrateKbps(kbps),
+      requestKeyframe: (request) => window.openNow.requestKeyframe(request),
+      onStateChange: (state) => {
+        this.diagnostics.networkRecoveryEnabled = state.enabled;
+        this.diagnostics.networkRecoveryActive = state.active;
+        this.diagnostics.networkRecoveryState = state.phase;
+        this.diagnostics.networkRecoveryAttempts = state.recoveryAttempts;
+        this.diagnostics.networkRecoveryAction = state.recoveryAction;
+        this.diagnostics.networkRecoveryTargetBitrateKbps = state.targetBitrateKbps;
       },
     });
     this.inputChannelPolicyController = new InputChannelPolicyController(
@@ -854,6 +870,7 @@ export class GfnWebRtcClient {
     this.videoDecodeStallWarningSent = false;
     this.statsChannelVersionLogged = false;
     this.decoderPressureController.reset();
+    this.networkRecoveryController.reset();
     this.resilientProfileTargetBitrateKbps = 0;
     const mouseDiagnostics = this.domInputController.getMouseDiagnostics();
     this.diagnostics = {
@@ -935,6 +952,7 @@ export class GfnWebRtcClient {
         && this.options.networkRecoveryProfile !== "current",
       networkRecoveryActive: this.options.networkRecoveryProfile !== undefined
         && this.options.networkRecoveryProfile !== "current",
+      networkRecoveryState: "STABLE",
       networkRecoveryAttempts: 0,
       networkRecoveryAction: this.options.networkRecoveryProfile !== undefined
         && this.options.networkRecoveryProfile !== "current"
@@ -985,6 +1003,10 @@ export class GfnWebRtcClient {
         : this.options.networkRecoveryProfile ?? "current",
     });
     this.resilientProfileTargetBitrateKbps = resilientProfile.maxBitrateKbps;
+    this.networkRecoveryController.initializeBitrate(resilientProfile.maxBitrateKbps);
+    this.networkRecoveryController.setProfile(
+      nativeRendererActive ? "current" : this.options.networkRecoveryProfile ?? "current",
+    );
 
     this.diagnostics.resolution = settings.resolution;
     this.diagnostics.codec = codec;
@@ -1000,11 +1022,10 @@ export class GfnWebRtcClient {
     );
     this.diagnostics.networkRecoveryEnabled = !nativeRendererActive
       && (this.options.networkRecoveryProfile ?? "current") !== "current";
-    this.diagnostics.networkRecoveryActive = this.diagnostics.networkRecoveryEnabled;
+    this.diagnostics.networkRecoveryActive = false;
+    this.diagnostics.networkRecoveryState = "STABLE";
     this.diagnostics.networkRecoveryAttempts = 0;
-    this.diagnostics.networkRecoveryAction = this.diagnostics.networkRecoveryEnabled
-      ? "Fast Burst Recovery SDP applied"
-      : "none";
+    this.diagnostics.networkRecoveryAction = "none";
     this.diagnostics.networkRecoveryTargetBitrateKbps = resilientProfile.maxBitrateKbps;
     this.diagnostics.decodeFps = nativeRendererActive ? settings.fps : 0;
     this.diagnostics.receiveFps = 0;
@@ -1291,8 +1312,17 @@ export class GfnWebRtcClient {
       this.diagnostics.rttMs = Math.round(rtt * 1000 * 10) / 10;
     }
 
+    await this.networkRecoveryController.recover({
+      packetLossPercent: this.diagnostics.packetLossPercent,
+      rttMs: this.diagnostics.rttMs,
+      jitterMs: this.diagnostics.jitterMs,
+      receiveFps: this.diagnostics.receiveFps,
+      decodeFps: this.diagnostics.decodeFps,
+    });
+
     const effectiveTargetBitrateKbps = Math.min(
       this.decoderPressureController.targetBitrateKbps,
+      this.networkRecoveryController.targetBitrateKbps,
       this.resilientProfileTargetBitrateKbps || this.decoderPressureController.targetBitrateKbps,
     );
     const bitrateDiagnostics = computeBitrateDiagnostics(
@@ -1301,8 +1331,7 @@ export class GfnWebRtcClient {
     );
     this.diagnostics.targetBitrateKbps = bitrateDiagnostics.targetBitrateKbps;
     this.diagnostics.availableBitrateKbps = bitrateDiagnostics.availableBitrateKbps;
-    this.diagnostics.networkRecoveryTargetBitrateKbps =
-      this.resilientProfileTargetBitrateKbps || this.decoderPressureController.targetBitrateKbps;
+    this.diagnostics.networkRecoveryTargetBitrateKbps = this.networkRecoveryController.targetBitrateKbps;
 
     const reliableBufferedAmount = this.reliableInputChannel?.bufferedAmount ?? 0;
     const partiallyReliableBufferedAmount = this.partiallyReliableInputChannel?.bufferedAmount ?? 0;
@@ -2183,6 +2212,11 @@ export class GfnWebRtcClient {
       this.diagnostics.connectionState = pc.connectionState;
       this.emitStats();
       this.log(`Peer connection state: ${pc.connectionState}`);
+      if (pc.connectionState === "disconnected" || pc.connectionState === "failed") {
+        this.networkRecoveryController.markReconnecting(`peer_${pc.connectionState}`);
+      } else if (pc.connectionState === "connected") {
+        this.networkRecoveryController.markReconnected();
+      }
       this.options.onPeerConnectionStateChange?.(pc.connectionState);
     };
 
@@ -2238,6 +2272,11 @@ export class GfnWebRtcClient {
 
     pc.oniceconnectionstatechange = () => {
       this.log(`ICE connection state: ${pc.iceConnectionState}`);
+      if (pc.iceConnectionState === "disconnected" || pc.iceConnectionState === "failed") {
+        this.networkRecoveryController.markReconnecting(`ice_${pc.iceConnectionState}`);
+      } else if (pc.iceConnectionState === "connected" || pc.iceConnectionState === "completed") {
+        this.networkRecoveryController.markReconnected();
+      }
       this.options.onIceConnectionStateChange?.(pc.iceConnectionState);
     };
 
