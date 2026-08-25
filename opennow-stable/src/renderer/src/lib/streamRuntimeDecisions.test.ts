@@ -5,6 +5,10 @@ import assert from "node:assert/strict";
 
 import { buildRuntimeSnapshot } from "./runtimeSnapshot";
 import { decideSignalingDisconnect, selectRecoveryCandidate } from "./streamRecoveryDecisions";
+import {
+  SEAMLESS_RESUME_NETWORK_PROFILE,
+  SIGNALING_RECOVERY_ATTEMPT_DELAYS_MS,
+} from "./streamSessionHelpers";
 
 test("runtime snapshot prefers the live session and preserves resume identity", () => {
   const snapshot = buildRuntimeSnapshot({
@@ -142,4 +146,23 @@ test("recovery candidate stays on the same session before app or persisted fallb
   );
   assert.equal(persisted.candidate?.serverIp, "10.0.0.9");
   assert.equal(persisted.source, "persisted-resume-context");
+});
+
+test("automatic Seamless Resume requires a live session and has one Survival attempt", () => {
+  const result = selectRecoveryCandidate(
+    [{ sessionId: "current", appId: 42, status: 1 }],
+    "current",
+    42,
+    {
+      sessionId: "current",
+      serverIp: "10.0.0.9",
+      clientId: "persisted-client",
+    },
+    { requireLiveSession: true },
+  );
+
+  assert.equal(result.candidate, null);
+  assert.equal(result.hasQueueOnlyMatch, true);
+  assert.deepEqual(SIGNALING_RECOVERY_ATTEMPT_DELAYS_MS, [0]);
+  assert.equal(SEAMLESS_RESUME_NETWORK_PROFILE, "survival");
 });

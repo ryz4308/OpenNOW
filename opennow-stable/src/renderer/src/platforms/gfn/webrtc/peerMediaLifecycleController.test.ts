@@ -108,7 +108,11 @@ interface VideoElementFake {
   cancelVideoFrameCallback: (id: number) => void;
 }
 
-function createHarness(contexts: FakeAudioContext[], onRenderFrame = () => {}) {
+function createHarness(
+  contexts: FakeAudioContext[],
+  onRenderFrame = () => {},
+  onVideoTrackEnded = (_track: MediaStreamTrack) => {},
+) {
   const logs: string[] = [];
   const audioElement: AudioElementFake = {
     muted: false,
@@ -138,6 +142,7 @@ function createHarness(contexts: FakeAudioContext[], onRenderFrame = () => {}) {
     videoElement: videoElement as unknown as HTMLVideoElement,
     audioElement: audioElement as unknown as HTMLAudioElement,
     onRenderFrame,
+    onVideoTrackEnded,
     log: (message) => logs.push(message),
     createAudioContext: () => contexts[contextIndex++] as unknown as AudioContext,
   });
@@ -335,6 +340,37 @@ test("video track replacement leaves exactly one active frame callback", () => {
 
     controller.clearTracks();
     assert.deepEqual(cancelled, [1, 3]);
+  } finally {
+    if (windowDescriptor) {
+      Object.defineProperty(globalThis, "window", windowDescriptor);
+    } else {
+      Reflect.deleteProperty(globalThis, "window");
+    }
+    restoreMediaStream();
+  }
+});
+
+test("only the active ended video track requests Seamless Resume", () => {
+  const restoreMediaStream = installMediaStreamFake();
+  const windowDescriptor = Object.getOwnPropertyDescriptor(globalThis, "window");
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: { setTimeout: () => 0 },
+  });
+  try {
+    const endedTrackIds: string[] = [];
+    const { controller } = createHarness([], () => {}, (track) => {
+      endedTrackIds.push(track.id);
+    });
+    const oldTrack = videoTrack("old");
+    const currentTrack = videoTrack("current");
+    controller.attachTrack(oldTrack);
+    controller.attachTrack(currentTrack);
+
+    oldTrack.onended?.(new Event("ended"));
+    assert.deepEqual(endedTrackIds, []);
+    currentTrack.onended?.(new Event("ended"));
+    assert.deepEqual(endedTrackIds, ["current"]);
   } finally {
     if (windowDescriptor) {
       Object.defineProperty(globalThis, "window", windowDescriptor);

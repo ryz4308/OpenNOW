@@ -196,6 +196,7 @@ interface ClientOptions {
   onMicStateChange?: (state: MicStateChange) => void;
   onIceConnectionStateChange?: (state: RTCIceConnectionState) => void;
   onPeerConnectionStateChange?: (state: RTCPeerConnectionState) => void;
+  onVideoTrackEnded?: () => void;
   /** Optional host callback for controller overlay shortcut edge presses. */
   onControllerMetaPress?: (event: { controllerId: number; gamepad: Gamepad }) => void;
 }
@@ -591,6 +592,7 @@ export class GfnWebRtcClient {
       videoElement: options.videoElement,
       audioElement: options.audioElement,
       onRenderFrame: () => this.updateRenderFps(),
+      onVideoTrackEnded: () => this.options.onVideoTrackEnded?.(),
       log: (message) => this.log(message),
     });
     this.keyboardLayout = options.keyboardLayout;

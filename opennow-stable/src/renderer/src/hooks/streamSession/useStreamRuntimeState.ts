@@ -82,6 +82,7 @@ export function useStreamRuntimeState() {
     explicitShutdown: false,
     appId: null,
     generation: 0,
+    profileOverride: null,
   });
   const directLaunchSessionSeenRef = useRef(false);
 

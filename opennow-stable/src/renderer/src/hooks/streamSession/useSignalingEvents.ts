@@ -5,6 +5,7 @@ import { dispatchStreamShortcutAction } from "../../streamShortcutActions";
 import {
   ICE_DISCONNECTED_RECOVERY_GRACE_MS,
   RECOVERABLE_STREAM_STATUSES,
+  SEAMLESS_RESUME_NETWORK_PROFILE,
   SIGNALING_REMOTE_ICE_GRACE_MS,
   isExpectedNativeSessionClose,
   readStreamClipboardText,
@@ -82,6 +83,50 @@ export function useSignalingEvents({
 
   // Signaling events
   useEffect(() => {
+    const reportSeamlessResumeFailure = (triggerReason: string, failure: unknown): void => {
+      if (signalingRecoveryRef.current.explicitShutdown) {
+        return;
+      }
+      const detail = failure instanceof Error
+        ? failure.message
+        : typeof failure === "string" && failure
+          ? failure
+          : "the running CloudMatch session could not be resumed";
+      console.error(`[Recovery] Seamless Resume failed after ${triggerReason}: ${detail}`);
+      clientRef.current?.dispose();
+      clientRef.current = null;
+      setLaunchError({
+        stage: streamStatusToLoadingStage(streamStatusRef.current),
+        title: t("errors.sessionConnectionLostTitle"),
+        description: `Seamless Resume failed (${triggerReason}): ${detail}`,
+      });
+      resetLaunchRuntime({ keepLaunchError: true, keepStreamingContext: true });
+      void refreshNavbarActiveSession();
+      launchInFlightRef.current = false;
+    };
+
+    const startSeamlessResume = (reason: string): void => {
+      if (
+        appUnloadingRef.current
+        || signalingRecoveryRef.current.explicitShutdown
+        || !RECOVERABLE_STREAM_STATUSES.includes(streamStatusRef.current)
+      ) {
+        return;
+      }
+      if (signalingRecoveryRef.current.inFlight) {
+        console.log(`[Recovery] Seamless Resume already in flight; ignoring duplicate trigger: ${reason}`);
+        return;
+      }
+      console.warn(`[Recovery] Starting one-shot Seamless Resume (${SEAMLESS_RESUME_NETWORK_PROFILE}): ${reason}`);
+      void attemptSessionRecovery(reason)
+        .then((recovered) => {
+          if (!recovered) {
+            reportSeamlessResumeFailure(reason, "automatic recovery was not eligible");
+          }
+        })
+        .catch((error) => reportSeamlessResumeFailure(reason, error));
+    };
+
     const ensureWebRtcClient = (): GfnWebRtcClient | null => {
       if (clientRef.current) {
         return clientRef.current;
@@ -100,7 +145,8 @@ export function useSignalingEvents({
         mouseSensitivity: settings.mouseSensitivity,
         mouseAcceleration: settings.mouseAcceleration,
         mouseFlushIntervalMs: settings.mouseFlushIntervalMs,
-        networkRecoveryProfile: settings.networkRecoveryProfile,
+        networkRecoveryProfile:
+          signalingRecoveryRef.current.profileOverride ?? settings.networkRecoveryProfile,
         keyboardLayout: settings.keyboardLayout,
         clipboardPaste: settings.clipboardPaste,
         readClipboardText: readStreamClipboardText,
@@ -136,9 +182,7 @@ export function useSignalingEvents({
           }
           if (iceState === "failed") {
             console.warn("[Recovery] ICE failed; attempting targeted recovery");
-            void attemptSessionRecovery("ICE failed").catch((error) => {
-              console.error("[Recovery] ICE-failed recovery failed:", error);
-            });
+            startSeamlessResume("ICE failed");
             return;
           }
           if (iceState === "disconnected") {
@@ -151,11 +195,12 @@ export function useSignalingEvents({
                 return;
               }
               console.warn("[Recovery] ICE remained disconnected; attempting targeted recovery");
-              void attemptSessionRecovery("ICE disconnected timeout").catch((error) => {
-                console.error("[Recovery] ICE-disconnected recovery failed:", error);
-              });
+              startSeamlessResume("ICE disconnected timeout");
             }, ICE_DISCONNECTED_RECOVERY_GRACE_MS);
           }
+        },
+        onVideoTrackEnded: () => {
+          startSeamlessResume("video track ended");
         },
       });
       clientRef.current.setOutputVolume(streamVolume);

@@ -74,6 +74,7 @@ export function useSessionRecoveryRuntime(runtime: RecoveryRuntime) {
     signalingRecoveryRef.current.attemptCount = 0;
     signalingRecoveryRef.current.inFlight = null;
     signalingRecoveryRef.current.appId = null;
+    signalingRecoveryRef.current.profileOverride = null;
     if (!options?.keepExplicitShutdown) {
       signalingRecoveryRef.current.explicitShutdown = false;
     }

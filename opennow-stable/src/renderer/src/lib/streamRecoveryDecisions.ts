@@ -57,6 +57,7 @@ export function selectRecoveryCandidate(
   currentSessionId: string,
   previousAppId: number | null,
   persisted: RuntimeSnapshot["resumeContext"],
+  options?: { requireLiveSession?: boolean },
 ): RecoveryCandidateResult {
   const isReady = (entry: ActiveSessionInfo): boolean =>
     Boolean(entry.serverIp) && (entry.status === 2 || entry.status === 3);
@@ -70,12 +71,16 @@ export function selectRecoveryCandidate(
       && entry.sessionId === currentSessionId
       && isReady(entry)
     )) ?? activeSessions.find((entry) => entry.appId === previousAppId && isReady(entry));
-  const candidate = sameSession ?? sameApp;
+  const candidate = options?.requireLiveSession ? sameSession : sameSession ?? sameApp;
 
   if (candidate) {
     return { candidate, source: "active-session", hasQueueOnlyMatch: false };
   }
-  if (persisted?.sessionId === currentSessionId && persisted.serverIp) {
+  if (
+    !options?.requireLiveSession
+    && persisted?.sessionId === currentSessionId
+    && persisted.serverIp
+  ) {
     return {
       candidate: {
         sessionId: persisted.sessionId,

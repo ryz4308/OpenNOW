@@ -2,6 +2,7 @@ interface PeerMediaLifecycleDependencies {
   videoElement: HTMLVideoElement;
   audioElement: HTMLAudioElement;
   onRenderFrame: () => void;
+  onVideoTrackEnded?: (track: MediaStreamTrack) => void;
   log: (message: string) => void;
   createAudioContext?: () => AudioContext;
 }
@@ -67,7 +68,12 @@ export class PeerMediaLifecycleController {
         this.dependencies.log("Warning: video track muted by sender");
       };
       track.onended = () => {
+        if (this.getVideoTrack() !== track) {
+          this.dependencies.log("Ignoring ended event from replaced video track");
+          return;
+        }
         this.dependencies.log("Warning: video track ended");
+        this.dependencies.onVideoTrackEnded?.(track);
       };
       this.dependencies.log("Video track attached");
       return;

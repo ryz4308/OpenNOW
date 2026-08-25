@@ -1,4 +1,4 @@
-import type { SessionInfo } from "@shared/gfn";
+import type { NetworkRecoveryProfile, SessionInfo } from "@shared/gfn";
 import type { StreamStatus } from "./appTypes";
 import type { GfnWebRtcClient } from "../platforms/gfn/webrtcClient";
 
@@ -8,10 +8,12 @@ export type SignalingRecoveryState = {
   explicitShutdown: boolean;
   appId: number | null;
   generation: number;
+  profileOverride: NetworkRecoveryProfile | null;
 };
 
 export const RECOVERABLE_STREAM_STATUSES: readonly StreamStatus[] = ["streaming"];
-export const SIGNALING_RECOVERY_ATTEMPT_DELAYS_MS = [0, 3000] as const;
+export const SIGNALING_RECOVERY_ATTEMPT_DELAYS_MS = [0] as const;
+export const SEAMLESS_RESUME_NETWORK_PROFILE: NetworkRecoveryProfile = "survival";
 export const SIGNALING_RECOVERY_STABLE_RESET_DELAY_MS = 15000;
 export const SIGNALING_REMOTE_ICE_GRACE_MS = 5000;
 export const ICE_DISCONNECTED_RECOVERY_GRACE_MS = 7000;

@@ -40,6 +40,7 @@ import { useGameLaunch } from "./hooks/streamSession/useGameLaunch";
 import { useSignalingEvents } from "./hooks/streamSession/useSignalingEvents";
 import {
   RECOVERABLE_STREAM_STATUSES,
+  SEAMLESS_RESUME_NETWORK_PROFILE,
   SIGNALING_RECOVERY_ATTEMPT_DELAYS_MS,
   sendStreamClipboardPaste,
   sleep,
@@ -1768,9 +1769,10 @@ export function App(): JSX.Element {
     }
 
     if (recoveryState.attemptCount >= SIGNALING_RECOVERY_ATTEMPT_DELAYS_MS.length) {
-      console.warn("[Recovery] Recovery budget exhausted");
-      return false;
+      throw new Error("the one automatic Seamless Resume attempt has already been used");
     }
+
+    recoveryState.profileOverride = SEAMLESS_RESUME_NETWORK_PROFILE;
 
     const attemptPromise = (async (): Promise<boolean> => {
       clientRef.current?.dispose();
@@ -1811,21 +1813,14 @@ export function App(): JSX.Element {
             currentSessionId,
             previousAppId,
             persisted,
+            { requireLiveSession: true },
           );
           const candidate = recoveryCandidate.candidate;
-          if (recoveryCandidate.source === "persisted-resume-context" && persisted) {
-            console.log("[Recovery] Falling back to persisted resume context", {
-              sessionId: persisted.sessionId,
-              serverIp: persisted.serverIp,
-              appId: persisted.appId ?? previousAppId ?? null,
-            });
-          }
-
           if (!candidate) {
             if (recoveryCandidate.hasQueueOnlyMatch) {
-              throw new Error("The session is still queued and cannot be reclaimed until the server marks it ready again.");
+              throw new Error("CloudMatch reports that this session is queued, not live, so Seamless Resume was not attempted");
             }
-            throw new Error("The running session could not be found anymore, so resume was not possible.");
+            throw new Error("CloudMatch no longer reports the exact session as live, so Seamless Resume was not attempted");
           }
 
           if (!candidate.serverIp) {
@@ -1834,6 +1829,9 @@ export function App(): JSX.Element {
 
           const recoverySubscription = await resolveSubscriptionInfoForLaunch();
           const recoveryStreamSettings = buildCurrentStreamSettings(recoverySubscription);
+          console.warn(
+            `[Recovery] Reclaiming the live session with ${SEAMLESS_RESUME_NETWORK_PROFILE} WebRTC recovery`,
+          );
           const claimed = await window.openNow.claimSession({
             token,
             streamingBaseUrl: effectiveStreamingBaseUrl,
