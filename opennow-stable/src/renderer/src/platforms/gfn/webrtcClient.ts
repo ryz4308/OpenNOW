@@ -82,6 +82,7 @@ import { updateVideoSenderBitrate } from "./webrtc/senderBitrate";
 import { CODEC_MIME_BY_NAME, buildCodecPreferenceList } from "./webrtc/codecPreferences";
 import { negotiatePeerConnectionCodecAnswer } from "./webrtc/codecNegotiation";
 import { OFFICIAL_MIN_BITRATE_KBPS } from "./sdp/nvstOffer";
+import type { StreamLifecycleDiagnosticEvent } from "../../utils/diagnosticsRecorder";
 
 export type {
   StreamDiagnostics,
@@ -192,6 +193,7 @@ interface ClientOptions {
   clipboardMaxBytes?: number;
   onLog: (line: string) => void;
   onStats?: (stats: StreamDiagnostics) => void;
+  onDiagnosticEvent?: (event: StreamLifecycleDiagnosticEvent) => void;
   onTimeWarning?: (warning: StreamTimeWarning) => void;
   onMicStateChange?: (state: MicStateChange) => void;
   onIceConnectionStateChange?: (state: RTCIceConnectionState) => void;
@@ -494,7 +496,14 @@ export class GfnWebRtcClient {
       log: (message) => this.log(message),
       getPeerConnection: () => this.pc,
       getControlChannel: () => this.controlChannel,
-      requestSignalingKeyframe: (request) => window.openNow.requestKeyframe(request),
+      requestSignalingKeyframe: async (request) => {
+        this.diagnosticEvent("KEYFRAME_REQUESTED", "Decoder recovery requested a signaling keyframe", {
+          reason: request.reason,
+          backlogFrames: request.backlogFrames,
+          attempt: request.attempt,
+        });
+        await window.openNow.requestKeyframe(request);
+      },
       setMaxBitrateKbps: (kbps) => this.setMaxBitrateKbps(kbps),
       onStateChange: (state) => {
         this.diagnostics.decoderPressureActive = state.active;
@@ -505,7 +514,14 @@ export class GfnWebRtcClient {
     this.networkRecoveryController = new NetworkRecoveryController({
       log: (message) => this.log(message),
       setMaxBitrateKbps: (kbps) => this.setMaxBitrateKbps(kbps),
-      requestKeyframe: (request) => window.openNow.requestKeyframe(request),
+      requestKeyframe: async (request) => {
+        this.diagnosticEvent("KEYFRAME_REQUESTED", "Network recovery requested one signaling keyframe", {
+          reason: request.reason,
+          backlogFrames: request.backlogFrames,
+          attempt: request.attempt,
+        });
+        await window.openNow.requestKeyframe(request);
+      },
       onStateChange: (state) => {
         this.diagnostics.networkRecoveryEnabled = state.enabled;
         this.diagnostics.networkRecoveryActive = state.active;
@@ -592,7 +608,10 @@ export class GfnWebRtcClient {
       videoElement: options.videoElement,
       audioElement: options.audioElement,
       onRenderFrame: () => this.updateRenderFps(),
-      onVideoTrackEnded: () => this.options.onVideoTrackEnded?.(),
+      onVideoTrackEnded: () => {
+        this.diagnosticEvent("MEDIA_TRACK_ENDED", "Active video track ended");
+        this.options.onVideoTrackEnded?.();
+      },
       log: (message) => this.log(message),
     });
     this.keyboardLayout = options.keyboardLayout;
@@ -821,6 +840,10 @@ export class GfnWebRtcClient {
     }
 
     const result = await updateVideoSenderBitrate(this.pc, normalizedKbps);
+    this.diagnosticEvent("LIVE_BITRATE_UPDATE", `Live bitrate update ${result.status}`, {
+      requestedKbps: normalizedKbps,
+      applied: result.status === "updated",
+    });
     if (result.status === "updated") {
       this.log(`Bitrate ceiling updated to ${normalizedKbps} kbps via sender parameters`);
       return true;
@@ -843,6 +866,14 @@ export class GfnWebRtcClient {
    */
   private log(message: string): void {
     this.options.onLog(message);
+  }
+
+  private diagnosticEvent(
+    type: string,
+    detail: string,
+    values?: Record<string, number | string | boolean>,
+  ): void {
+    this.options.onDiagnosticEvent?.({ type, detail, values });
   }
 
   private diagnosticsChangedSinceLastEmit(): boolean {
@@ -2134,6 +2165,14 @@ export class GfnWebRtcClient {
   async handleOffer(offerSdp: string, session: SessionInfo, settings: OfferSettings): Promise<void> {
     this.cleanupPeerConnection();
     this.remoteIceEndpoint = session.mediaConnectionInfo ?? null;
+    this.diagnosticEvent("RTP_NEGOTIATION_STARTED", "WebRTC offer processing started", {
+      codec: settings.codec,
+      resolution: settings.resolution,
+      fps: settings.fps,
+      requestedKbps: settings.maxBitrateKbps,
+      iceServers: session.iceServers.length,
+      cloudMatchMediaEndpoint: Boolean(session.mediaConnectionInfo),
+    });
     this.log("=== handleOffer START ===");
     this.log(`Session: status=${session.status}, idPresent=${Boolean(session.sessionId)}`);
     this.log(`Signaling: serverPresent=${Boolean(session.signalingServer)}, urlPresent=${Boolean(session.signalingUrl)}`);
@@ -2190,6 +2229,7 @@ export class GfnWebRtcClient {
     pc.onicecandidate = (event) => {
       if (!event.candidate) {
         this.log("ICE gathering complete (null candidate)");
+        this.diagnosticEvent("ICE_GATHERING_COMPLETE", "Local ICE gathering completed");
         return;
       }
       const payload = event.candidate.toJSON();
@@ -2199,6 +2239,11 @@ export class GfnWebRtcClient {
       this.log(
         `Local ICE candidate: type=${event.candidate.type ?? "unknown"}, protocol=${event.candidate.protocol ?? "unknown"}`,
       );
+      this.diagnosticEvent("ICE_CANDIDATE_LOCAL", "Local ICE candidate discovered", {
+        candidateType: event.candidate.type ?? "unknown",
+        protocol: event.candidate.protocol ?? "unknown",
+        queuedUntilAnswer: !answerSent,
+      });
       const candidate: IceCandidatePayload = {
         candidate: payload.candidate,
         sdpMid: payload.sdpMid,
@@ -2217,6 +2262,9 @@ export class GfnWebRtcClient {
       this.diagnostics.connectionState = pc.connectionState;
       this.emitStats();
       this.log(`Peer connection state: ${pc.connectionState}`);
+      this.diagnosticEvent("PEER_CONNECTION_STATE", `Peer connection changed to ${pc.connectionState}`, {
+        state: pc.connectionState,
+      });
       if (pc.connectionState === "disconnected" || pc.connectionState === "failed") {
         this.networkRecoveryController.markReconnecting(`peer_${pc.connectionState}`);
       } else if (pc.connectionState === "connected") {
@@ -2228,6 +2276,10 @@ export class GfnWebRtcClient {
     pc.ondatachannel = (event) => {
       const channel = event.channel;
       this.log(`Remote data channel received: label=${channel.label}, ordered=${channel.ordered}`);
+      this.diagnosticEvent("RTP_DATA_CHANNEL", "Remote data channel received", {
+        label: channel.label,
+        ordered: channel.ordered,
+      });
 
       if (channel.label === "stats" || channel.label === "stats_channel") {
         channel.binaryType = "arraybuffer";
@@ -2273,10 +2325,18 @@ export class GfnWebRtcClient {
       const hasHostCandidate = "hostCandidate" in e
         && Boolean((e as RTCPeerConnectionIceErrorEvent & { hostCandidate?: string }).hostCandidate);
       this.log(`ICE candidate error: code=${e.errorCode}, urlPresent=${Boolean(e.url)}, hostCandidatePresent=${hasHostCandidate}`);
+      this.diagnosticEvent("ICE_CANDIDATE_ERROR", "ICE candidate discovery reported an error", {
+        errorCode: e.errorCode,
+        urlPresent: Boolean(e.url),
+        hostCandidatePresent: hasHostCandidate,
+      });
     };
 
     pc.oniceconnectionstatechange = () => {
       this.log(`ICE connection state: ${pc.iceConnectionState}`);
+      this.diagnosticEvent("ICE_CONNECTION_STATE", `ICE connection changed to ${pc.iceConnectionState}`, {
+        state: pc.iceConnectionState,
+      });
       if (pc.iceConnectionState === "disconnected" || pc.iceConnectionState === "failed") {
         this.networkRecoveryController.markReconnecting(`ice_${pc.iceConnectionState}`);
       } else if (pc.iceConnectionState === "connected" || pc.iceConnectionState === "completed") {
@@ -2295,6 +2355,11 @@ export class GfnWebRtcClient {
 
     pc.ontrack = (event) => {
       this.log(`Track received: kind=${event.track.kind}, id=${event.track.id}, readyState=${event.track.readyState}`);
+      this.diagnosticEvent("MEDIA_TRACK_RECEIVED", `${event.track.kind} track received`, {
+        kind: event.track.kind,
+        readyState: event.track.readyState,
+        streams: event.streams.length,
+      });
       this.peerMediaController.attachTrack(event.track);
 
       // Configure low-latency jitter buffer for video and audio receivers
@@ -2493,6 +2558,13 @@ export class GfnWebRtcClient {
       nvstSdp,
     });
     this.log("Sent SDP answer and nvstSdp");
+    this.diagnosticEvent("RTP_NEGOTIATION_APPLIED", "SDP answer and NvST profile sent", {
+      codec: effectiveCodec,
+      resolution: settings.resolution,
+      fps: settings.fps,
+      profile: this.options.networkRecoveryProfile ?? "current",
+      queuedLocalIce: queuedLocalIce.length,
+    });
     answerSent = true;
     if (queuedLocalIce.length > 0) {
       this.log(`Flushing ${queuedLocalIce.length} queued local ICE candidates after answer`);
@@ -2511,6 +2583,11 @@ export class GfnWebRtcClient {
   async addRemoteCandidate(candidate: IceCandidatePayload): Promise<void> {
     const sdpMLineIndex = candidate.sdpMLineIndex ?? (candidate.sdpMid == null ? 0 : undefined);
     this.log(`Remote ICE candidate received (sdpMidPresent=${candidate.sdpMid != null}, sdpMLineIndex=${sdpMLineIndex})`);
+    this.diagnosticEvent("ICE_CANDIDATE_REMOTE", "Remote ICE candidate received", {
+      sdpMidPresent: candidate.sdpMid != null,
+      sdpMLineIndex: sdpMLineIndex ?? -1,
+      queued: !this.pc || !this.pc.remoteDescription,
+    });
     const init: RTCIceCandidateInit = {
       candidate: candidate.candidate,
       sdpMid: candidate.sdpMid ?? undefined,

@@ -24,7 +24,21 @@ test("records network and renderer incidents without exposing the raw session id
     decodeFps: 60,
     renderFps: 60,
     dataChannels: ["control", "input"],
+    targetBitrateKbps: 20_000,
+    availableBitrateKbps: 18_000,
+    framesReceived: 100,
+    packetsReceived: 1_000,
+    keyFramesDecoded: 2,
   }, startedAt);
+  recorder.recordEvent({
+    type: "gateway websocket connected",
+    detail: "Connected through https://gateway.example.test/path at 192.0.2.10",
+    values: {
+      sessionId: "secret-session-id",
+      candidateType: "srflx",
+      protocol: "udp",
+    },
+  }, startedAt + 100);
   recorder.record({
     ...defaultDiagnostics(),
     connectionState: "connected",
@@ -52,6 +66,12 @@ test("records network and renderer incidents without exposing the raw session id
     cursorSourceHeight: 720,
     cursorDevicePixelRatio: 1,
     cursorPointerLocked: true,
+    targetBitrateKbps: 12_000,
+    availableBitrateKbps: 4_000,
+    framesReceived: 120,
+    packetsReceived: 1_100,
+    keyFramesDecoded: 3,
+    networkRecoveryAction: "keyframe_requested",
   }, startedAt + 1_100);
   recorder.record({
     ...defaultDiagnostics(),
@@ -67,6 +87,11 @@ test("records network and renderer incidents without exposing the raw session id
     nackCount: 8,
     pliCount: 1,
     dataChannels: ["control", "input"],
+    targetBitrateKbps: 12_000,
+    availableBitrateKbps: 16_000,
+    framesReceived: 5,
+    packetsReceived: 20,
+    keyFramesDecoded: 1,
   }, startedAt + 2_200);
   recorder.record({
     ...defaultDiagnostics(),
@@ -80,11 +105,18 @@ test("records network and renderer incidents without exposing the raw session id
     nackCount: 8,
     pliCount: 1,
     dataChannels: ["control", "input"],
+    targetBitrateKbps: 12_000,
+    availableBitrateKbps: 10_000,
+    framesReceived: 65,
+    packetsReceived: 620,
+    keyFramesDecoded: 2,
   }, startedAt + 3_300);
 
   const report = recorder.exportReport(startedAt + 3_300);
   const serialized = JSON.stringify(report);
   assert.equal(serialized.includes("secret-session-id"), false);
+  assert.equal(serialized.includes("gateway.example.test"), false);
+  assert.equal(serialized.includes("192.0.2.10"), false);
   assert.equal(serialized.includes("stream-1"), true);
 
   const events = report.events as Array<{ type: string; values?: Record<string, unknown> }>;
@@ -94,7 +126,15 @@ test("records network and renderer incidents without exposing the raw session id
   assert.equal(events.some((event) => event.type === "NACK_INCREASED"), true);
   assert.equal(events.some((event) => event.type === "PLI_INCREASED"), true);
   assert.equal(events.some((event) => event.type === "CURSOR_VIEWPORT_RESYNC"), true);
-  assert.equal(report.schemaVersion, 4);
+  assert.equal(events.some((event) => event.type === "GATEWAY_WEBSOCKET_CONNECTED"), true);
+  assert.equal(events.some((event) => event.type === "BITRATE_TARGET_CHANGED"), true);
+  assert.equal(events.some((event) => event.type === "AVAILABLE_BITRATE_COLLAPSE"), true);
+  assert.equal(events.some((event) => event.type === "AVAILABLE_BITRATE_RECOVERED"), true);
+  assert.equal(events.some((event) => event.type === "NETWORK_RECOVERY_ACTION"), true);
+  assert.equal(events.some((event) => event.type === "RTP_COUNTER_RESET"), true);
+  const gatewayEvent = events.find((event) => event.type === "GATEWAY_WEBSOCKET_CONNECTED");
+  assert.deepEqual(gatewayEvent?.values, { candidateType: "srflx", protocol: "udp" });
+  assert.equal(report.schemaVersion, 5);
 
   const summary = report.summary as {
     sampleCount: number;

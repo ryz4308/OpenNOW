@@ -1714,6 +1714,14 @@ export function App(): JSX.Element {
 
         const launchSubscription = await resolveSubscriptionInfoForLaunch();
         const streamSettings = buildCurrentStreamSettings(launchSubscription);
+        streamDiagnosticsRecorder.recordEvent({
+          type: "CLOUDMATCH_CLAIM_STARTED",
+          detail: "Claiming an existing CloudMatch session",
+          values: {
+            recoveryMode: false,
+            profile: settings.networkRecoveryProfile,
+          },
+        });
         const claimed = await window.openNow.claimSession({
           token,
           streamingBaseUrl: effectiveStreamingBaseUrl,
@@ -1724,6 +1732,12 @@ export function App(): JSX.Element {
           appLaunchMode: existingSession.appLaunchMode,
           enablePersistingInGameSettings: existingSession.enablePersistingInGameSettings,
           settings: streamSettings,
+        });
+
+        streamDiagnosticsRecorder.recordEvent({
+          type: "CLOUDMATCH_CLAIM_COMPLETED",
+          detail: "Existing CloudMatch session claim completed",
+          values: { recoveryMode: false, status: claimed.status },
         });
 
         await applyClaimedSessionAndConnect(claimed);
@@ -1738,7 +1752,7 @@ export function App(): JSX.Element {
 
     claimResumePromisesRef.current.set(sid, resumePromiseHolder.promise);
     await resumePromiseHolder.promise;
-  }, [applyClaimedSessionAndConnect, authSession, buildCurrentStreamSettings, effectiveStreamingBaseUrl, findGameContextForSession, resolveResumeIdentity, resolveSessionClaimAppId, resolveSubscriptionInfoForLaunch, warmNativeStreamerForLaunch]);
+  }, [applyClaimedSessionAndConnect, authSession, buildCurrentStreamSettings, effectiveStreamingBaseUrl, findGameContextForSession, resolveResumeIdentity, resolveSessionClaimAppId, resolveSubscriptionInfoForLaunch, settings.networkRecoveryProfile, warmNativeStreamerForLaunch]);
 
   const attemptSessionRecovery = useCallback(async (reason: string): Promise<boolean> => {
     const recoveryState = signalingRecoveryRef.current;
@@ -1773,6 +1787,14 @@ export function App(): JSX.Element {
     }
 
     recoveryState.profileOverride = SEAMLESS_RESUME_NETWORK_PROFILE;
+    streamDiagnosticsRecorder.recordEvent({
+      type: "CLOUDMATCH_RECOVERY_STARTED",
+      detail: reason || "Automatic Seamless Resume started",
+      values: {
+        profile: SEAMLESS_RESUME_NETWORK_PROFILE,
+        streamStatus: currentStatus,
+      },
+    });
 
     const attemptPromise = (async (): Promise<boolean> => {
       clientRef.current?.dispose();
@@ -1800,6 +1822,11 @@ export function App(): JSX.Element {
         }
 
         try {
+          streamDiagnosticsRecorder.recordEvent({
+            type: "CLOUDMATCH_SESSION_LOOKUP",
+            detail: "Checking whether the exact CloudMatch session is still live",
+            values: { attempt: attemptNumber },
+          });
           const activeSessions = await window.openNow.getActiveSessions(token, effectiveStreamingBaseUrl);
           if (!isRecoveryGenerationCurrent(recoveryGeneration)) {
             console.log("[Recovery] Aborting attempt after active session lookup due to stale generation");
@@ -1816,6 +1843,16 @@ export function App(): JSX.Element {
             { requireLiveSession: true },
           );
           const candidate = recoveryCandidate.candidate;
+          streamDiagnosticsRecorder.recordEvent({
+            type: "CLOUDMATCH_SESSION_LOOKUP_RESULT",
+            detail: candidate ? "Exact live CloudMatch session found" : "Exact live CloudMatch session not found",
+            values: {
+              attempt: attemptNumber,
+              activeSessionCount: activeSessions.length,
+              exactLiveMatch: Boolean(candidate),
+              queueOnlyMatch: recoveryCandidate.hasQueueOnlyMatch,
+            },
+          });
           if (!candidate) {
             if (recoveryCandidate.hasQueueOnlyMatch) {
               throw new Error("CloudMatch reports that this session is queued, not live, so Seamless Resume was not attempted");
@@ -1832,6 +1869,14 @@ export function App(): JSX.Element {
           console.warn(
             `[Recovery] Reclaiming the live session with ${SEAMLESS_RESUME_NETWORK_PROFILE} WebRTC recovery`,
           );
+          streamDiagnosticsRecorder.recordEvent({
+            type: "CLOUDMATCH_CLAIM_STARTED",
+            detail: "Reclaiming the verified live CloudMatch session",
+            values: {
+              attempt: attemptNumber,
+              profile: SEAMLESS_RESUME_NETWORK_PROFILE,
+            },
+          });
           const claimed = await window.openNow.claimSession({
             token,
             streamingBaseUrl: effectiveStreamingBaseUrl,
@@ -1862,10 +1907,20 @@ export function App(): JSX.Element {
             console.log("[Recovery] Recovery generation changed before connect completed");
             return false;
           }
+          streamDiagnosticsRecorder.recordEvent({
+            type: "CLOUDMATCH_CLAIM_CONNECTED",
+            detail: "CloudMatch claim completed and signaling reconnect started",
+            values: { attempt: attemptNumber },
+          });
           return true;
         } catch (error) {
           lastError = error instanceof Error ? error : new Error(String(error));
           console.warn(`[Recovery] Attempt ${attemptNumber} failed:`, lastError.message);
+          streamDiagnosticsRecorder.recordEvent({
+            type: "CLOUDMATCH_RECOVERY_FAILED",
+            detail: lastError.message,
+            values: { attempt: attemptNumber },
+          });
         }
       }
 
@@ -1898,6 +1953,11 @@ export function App(): JSX.Element {
 
   const handleExpectedNativeSessionClose = useCallback((reason: string): void => {
     console.log("[Recovery] Treating signaling close as ended session:", reason);
+    streamDiagnosticsRecorder.recordEvent({
+      type: "SESSION_EXIT_REMOTE",
+      detail: reason || "Remote session ended",
+      values: { expected: true },
+    });
     const activeGameId = streamingGameRef.current?.id;
     if (activeGameId) {
       endPlaytimeSession(activeGameId);
@@ -2309,6 +2369,11 @@ export function App(): JSX.Element {
   // Stop stream handler
   const handleStopStream = useCallback(async () => {
     try {
+      streamDiagnosticsRecorder.recordEvent({
+        type: "SESSION_EXIT_REQUESTED",
+        detail: "User requested session exit",
+        values: { userInitiated: true },
+      });
       resolveExitPrompt(false);
       const status = streamStatusRef.current;
       if (status !== "idle" && status !== "streaming") {
@@ -2335,8 +2400,18 @@ export function App(): JSX.Element {
       if (streamingGame) endPlaytimeSession(streamingGame.id);
       resetLaunchRuntime();
       void refreshNavbarActiveSession();
+      streamDiagnosticsRecorder.recordEvent({
+        type: "SESSION_EXIT_COMPLETED",
+        detail: "Session exit and CloudMatch stop completed",
+        values: { userInitiated: true },
+      });
     } catch (error) {
       console.error("Stop failed:", error);
+      streamDiagnosticsRecorder.recordEvent({
+        type: "SESSION_EXIT_FAILED",
+        detail: error instanceof Error ? error.message : "Session exit failed",
+        values: { userInitiated: true },
+      });
     }
   }, [endPlaytimeSession, markExplicitSignalingShutdown, refreshNavbarActiveSession, resetLaunchRuntime, resolveExitPrompt, stopSessionByTarget, streamingGame]);
 

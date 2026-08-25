@@ -31,6 +31,7 @@ import {
 } from "../../lib/sessionState";
 import { disposeSessionCreatedAfterAbort, sleep } from "../../lib/streamSessionHelpers";
 import type { StreamLoadingStatus } from "../../lib/appTypes";
+import { streamDiagnosticsRecorder } from "../../utils/diagnosticsRecorder";
 import type { StreamRuntimeState } from "./useStreamRuntimeState";
 
 const SESSION_READY_POLL_INTERVAL_MS = 2000;
@@ -233,7 +234,16 @@ export function useGameLaunch({
       // Check for active sessions first
       if (token) {
         try {
+          streamDiagnosticsRecorder.recordEvent({
+            type: "CLOUDMATCH_SESSION_LOOKUP",
+            detail: "Checking CloudMatch for an existing launch session",
+          });
           const activeSessions = await window.openNow.getActiveSessions(token, launchStreamingBaseUrl);
+          streamDiagnosticsRecorder.recordEvent({
+            type: "CLOUDMATCH_SESSION_LOOKUP_RESULT",
+            detail: "CloudMatch existing-session lookup completed",
+            values: { activeSessionCount: activeSessions.length },
+          });
           if (launchAbortRef.current) return;
           if (activeSessions.length > 0) {
             activeSessionGpuType = activeSessions.find(
@@ -271,6 +281,10 @@ export function useGameLaunch({
           }
         } catch (error) {
           console.error("Failed to claim/resume session:", error);
+          streamDiagnosticsRecorder.recordEvent({
+            type: "CLOUDMATCH_SESSION_LOOKUP_FAILED",
+            detail: error instanceof Error ? error.message : "CloudMatch existing-session lookup failed",
+          });
           // Continue to create new session
         }
       }
@@ -280,6 +294,14 @@ export function useGameLaunch({
       if (launchAbortRef.current) return;
 
       // Create new session
+      streamDiagnosticsRecorder.recordEvent({
+        type: "CLOUDMATCH_SESSION_CREATE_STARTED",
+        detail: "Creating a new CloudMatch session",
+        values: {
+          profile: settings.networkRecoveryProfile,
+          requestedKbps: streamSettings.maxBitrateMbps * 1_000,
+        },
+      });
       let newSession = await window.openNow.createSession({
         token: token || undefined,
         streamingBaseUrl: launchStreamingBaseUrl,
@@ -294,6 +316,15 @@ export function useGameLaunch({
         zone: "prod",
         settings: streamSettings,
         supportedCodecs,
+      });
+      streamDiagnosticsRecorder.recordEvent({
+        type: "CLOUDMATCH_SESSION_CREATED",
+        detail: "CloudMatch session created",
+        values: {
+          status: newSession.status,
+          queued: isSessionInQueue(newSession),
+          queuePosition: newSession.queuePosition ?? -1,
+        },
       });
 
       if (!newSession.gpuType?.trim() && activeSessionGpuType) {
@@ -400,6 +431,11 @@ export function useGameLaunch({
 
         if (isSessionReadyForConnect(mergedSession.status)) {
           finalSession = mergedSession;
+          streamDiagnosticsRecorder.recordEvent({
+            type: "CLOUDMATCH_SESSION_READY",
+            detail: "CloudMatch session became ready for signaling",
+            values: { pollAttempts: attempt, status: mergedSession.status },
+          });
           break;
         }
 
@@ -430,11 +466,19 @@ export function useGameLaunch({
       });
 
       await window.openNow.connectSignaling(buildSignalingConnectRequest(sessionToConnect));
+      streamDiagnosticsRecorder.recordEvent({
+        type: "GATEWAY_WEBSOCKET_CONNECT_REQUESTED",
+        detail: "Requested signaling gateway connection for the ready session",
+      });
     } catch (error) {
       if (launchAbortRef.current) {
         return;
       }
       console.error("Launch failed:", error);
+      streamDiagnosticsRecorder.recordEvent({
+        type: "CLOUDMATCH_LAUNCH_FAILED",
+        detail: error instanceof Error ? error.message : "CloudMatch launch failed",
+      });
       setLaunchError(toLaunchErrorState(t, error, loadingStep, launchGameContext));
       await disconnectSignalingControlled();
       clientRef.current?.dispose();
@@ -460,6 +504,7 @@ export function useGameLaunch({
     resolveSubscriptionInfoForLaunch,
     canLaunch,
     settings.enablePersistingInGameSettings,
+    settings.networkRecoveryProfile,
     stopSessionByTarget,
     streamStatus,
     t,

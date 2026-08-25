@@ -18,6 +18,7 @@ import { warningMessage, warningTone } from "../../lib/sessionWarnings";
 import { resolveStreamProfileCodec } from "../../lib/codecDiagnostics";
 import { GfnWebRtcClient } from "../../platforms/gfn/webrtcClient";
 import type { StreamDiagnosticsStore } from "../../utils/streamDiagnosticsStore";
+import { streamDiagnosticsRecorder } from "../../utils/diagnosticsRecorder";
 import type { StreamRuntimeState } from "./useStreamRuntimeState";
 
 type TranslateFunction = typeof import("../../i18n").t;
@@ -152,6 +153,7 @@ export function useSignalingEvents({
         readClipboardText: readStreamClipboardText,
         onLog: (line: string) => console.log(`[WebRTC] ${line}`),
         onStats: (stats) => diagnosticsStore.set(stats),
+        onDiagnosticEvent: (event) => streamDiagnosticsRecorder.recordEvent(event),
         onTimeWarning: (warning) => {
           setRemoteStreamWarning({
             code: warning.code,
@@ -268,7 +270,37 @@ export function useSignalingEvents({
         event.type === "offer" ? `(SDP ${event.sdp.length} chars)` : "",
         event.type === "remote-ice" ? "(candidate received)" : "",
       );
+      if (event.type === "connected") {
+        streamDiagnosticsRecorder.recordEvent({
+          type: "GATEWAY_WEBSOCKET_CONNECTED",
+          detail: "Signaling gateway WebSocket connected",
+        });
+      } else if (event.type === "offer") {
+        streamDiagnosticsRecorder.recordEvent({
+          type: "GATEWAY_OFFER_RECEIVED",
+          detail: "Signaling gateway delivered a WebRTC offer",
+          values: { sdpBytes: event.sdp.length },
+        });
+      } else if (event.type === "remote-ice") {
+        streamDiagnosticsRecorder.recordEvent({
+          type: "GATEWAY_REMOTE_ICE_RECEIVED",
+          detail: "Signaling gateway delivered a remote ICE candidate",
+        });
+      } else if (event.type === "disconnected") {
+        streamDiagnosticsRecorder.recordEvent({
+          type: "GATEWAY_WEBSOCKET_DISCONNECTED",
+          detail: event.reason || "Signaling gateway disconnected",
+        });
+      } else if (event.type === "error") {
+        streamDiagnosticsRecorder.recordEvent({
+          type: "GATEWAY_WEBSOCKET_ERROR",
+          detail: event.message || "Signaling gateway error",
+        });
+      }
       try {
+        if (event.type === "connected") {
+          return;
+        }
         if (event.type === "offer") {
           pendingControlledDisconnectsRef.current = 0;
           const activeSession = sessionRef.current;

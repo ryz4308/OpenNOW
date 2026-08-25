@@ -18,6 +18,12 @@ export interface DiagnosticEvent {
   values?: Record<string, number | string | boolean>;
 }
 
+export interface StreamLifecycleDiagnosticEvent {
+  type: string;
+  detail: string;
+  values?: Record<string, number | string | boolean>;
+}
+
 type DiagnosticSample = Omit<StreamDiagnostics, "sessionId"> & {
   timestamp: string;
   elapsedMs: number;
@@ -49,6 +55,18 @@ export class StreamDiagnosticsRecorder {
     this.context = { ...this.context, ...context };
   }
 
+  recordEvent(
+    event: StreamLifecycleDiagnosticEvent,
+    recordedAtMs = Date.now(),
+  ): void {
+    this.pushEvent(
+      recordedAtMs,
+      normalizeEventType(event.type),
+      redactDiagnosticDetail(event.detail),
+      sanitizeDiagnosticValues(event.values),
+    );
+  }
+
   record(stats: StreamDiagnostics, recordedAtMs = Date.now()): void {
     this.recordTransitions(stats, recordedAtMs);
     if (recordedAtMs - this.lastSampleAtMs < SAMPLE_INTERVAL_MS) {
@@ -71,7 +89,7 @@ export class StreamDiagnosticsRecorder {
   exportReport(generatedAtMs = Date.now()): Record<string, unknown> {
     const finishedAt = this.samples.at(-1)?.timestamp ?? new Date(generatedAtMs).toISOString();
     return {
-      schemaVersion: 4,
+      schemaVersion: 5,
       generatedAt: new Date(generatedAtMs).toISOString(),
       captureStartedAt: new Date(this.startedAtMs).toISOString(),
       captureFinishedAt: finishedAt,
@@ -81,6 +99,7 @@ export class StreamDiagnosticsRecorder {
         "streamIdentifier is a local alias; the NVIDIA session identifier is not exported.",
         "availableBitrateKbps is browser-estimated and may be unavailable or inaccurate.",
         "Cursor Viewport Guard events record CSS viewport, source resolution, and DPI resynchronization.",
+        "Gateway, CloudMatch, ICE, RTP, bitrate, keyframe, track, and exit lifecycle events are sanitized before export.",
         "NETWORK_STALL and RENDER_STALL are diagnostic classifications, not proof of a single root cause.",
       ],
       summary: this.buildSummary(),
@@ -106,6 +125,27 @@ export class StreamDiagnosticsRecorder {
       this.recordChangedValue(nowMs, "TRANSPORT_CHANGED", "transport", previous.transportType, stats.transportType);
       this.recordChangedValue(nowMs, "RESOLUTION_CHANGED", "resolution", previous.resolution, stats.resolution);
       this.recordChangedValue(nowMs, "CODEC_CHANGED", "codec", previous.codec, stats.codec);
+      this.recordNumericChange(
+        nowMs,
+        "BITRATE_TARGET_CHANGED",
+        "targetBitrateKbps",
+        previous.targetBitrateKbps,
+        stats.targetBitrateKbps,
+      );
+      this.recordAvailableBitrateTransition(nowMs, previous, stats);
+      this.recordRecoveryActionChange(nowMs, "NETWORK_RECOVERY_ACTION", previous.networkRecoveryAction, stats.networkRecoveryAction);
+      this.recordRecoveryActionChange(nowMs, "DECODER_RECOVERY_ACTION", previous.decoderRecoveryAction, stats.decoderRecoveryAction);
+      if (
+        stats.framesReceived < previous.framesReceived
+        || stats.packetsReceived < previous.packetsReceived
+        || stats.keyFramesDecoded < previous.keyFramesDecoded
+      ) {
+        this.pushEvent(nowMs, "RTP_COUNTER_RESET", "Inbound RTP counters reset after a stream or receiver change", {
+          framesReceived: stats.framesReceived,
+          packetsReceived: stats.packetsReceived,
+          keyFramesDecoded: stats.keyFramesDecoded,
+        });
+      }
       if (previous.sessionId !== stats.sessionId && stats.sessionId) {
         this.pushEvent(nowMs, "STREAM_CHANGED", `Active stream is ${this.aliasForSession(stats.sessionId)}`);
       }
@@ -208,6 +248,56 @@ export class StreamDiagnosticsRecorder {
       current,
       delta: current - previous,
     });
+  }
+
+  private recordNumericChange(
+    nowMs: number,
+    eventType: string,
+    counter: string,
+    previous: number,
+    current: number,
+  ): void {
+    if (previous === current || (!previous && !current)) return;
+    this.pushEvent(nowMs, eventType, `${counter}: ${previous} -> ${current}`, {
+      previous,
+      current,
+    });
+  }
+
+  private recordAvailableBitrateTransition(
+    nowMs: number,
+    previous: StreamDiagnostics,
+    current: StreamDiagnostics,
+  ): void {
+    const target = Math.max(current.targetBitrateKbps, this.context.requestedMaxBitrateMbps
+      ? this.context.requestedMaxBitrateMbps * 1_000
+      : 0);
+    if (target <= 0 || current.availableBitrateKbps <= 0) return;
+    const previousRatio = previous.availableBitrateKbps > 0
+      ? previous.availableBitrateKbps / target
+      : 1;
+    const currentRatio = current.availableBitrateKbps / target;
+    if (previousRatio >= 0.5 && currentRatio < 0.5) {
+      this.pushEvent(nowMs, "AVAILABLE_BITRATE_COLLAPSE", "Browser-estimated incoming bitrate fell below 50% of target", {
+        availableBitrateKbps: current.availableBitrateKbps,
+        targetBitrateKbps: target,
+      });
+    } else if (previousRatio < 0.5 && currentRatio >= 0.75) {
+      this.pushEvent(nowMs, "AVAILABLE_BITRATE_RECOVERED", "Browser-estimated incoming bitrate recovered above 75% of target", {
+        availableBitrateKbps: current.availableBitrateKbps,
+        targetBitrateKbps: target,
+      });
+    }
+  }
+
+  private recordRecoveryActionChange(
+    nowMs: number,
+    eventType: string,
+    previous: string,
+    current: string,
+  ): void {
+    if (previous === current || current === "none") return;
+    this.pushEvent(nowMs, eventType, current.replaceAll("_", " "), { action: current });
   }
 
   private pushSpikeEvent(
@@ -320,6 +410,33 @@ function summarize(values: number[]): Record<string, number | null> {
 function round(value: number, digits: number): number {
   const factor = 10 ** digits;
   return Math.round(value * factor) / factor;
+}
+
+const SENSITIVE_VALUE_KEY = /(^candidate$|credential|deviceId|hostAddress|(^|_)id$|(^|_)ip$|peerId|serverAddress|sessionId|token|url)/i;
+
+function normalizeEventType(type: string): string {
+  const normalized = type.trim().toUpperCase().replace(/[^A-Z0-9_]+/g, "_");
+  return normalized.slice(0, 80) || "DIAGNOSTIC_EVENT";
+}
+
+function redactDiagnosticDetail(detail: string): string {
+  return detail
+    .replace(/https?:\/\/\S+/gi, "[url]")
+    .replace(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g, "[ip]")
+    .slice(0, 500);
+}
+
+function sanitizeDiagnosticValues(
+  values?: Record<string, number | string | boolean>,
+): Record<string, number | string | boolean> | undefined {
+  if (!values) return undefined;
+  const safe = Object.fromEntries(
+    Object.entries(values)
+      .filter(([key]) => !SENSITIVE_VALUE_KEY.test(key))
+      .slice(0, 32)
+      .map(([key, value]) => [key, typeof value === "string" ? redactDiagnosticDetail(value) : value]),
+  );
+  return Object.keys(safe).length > 0 ? safe : undefined;
 }
 
 export const streamDiagnosticsRecorder = new StreamDiagnosticsRecorder();
