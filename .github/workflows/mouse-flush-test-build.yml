@@ -8,6 +8,7 @@ on:
   push:
     branches:
       - mouse-flush-test
+      - opennow-resilience-v2
 
 permissions:
   contents: read
