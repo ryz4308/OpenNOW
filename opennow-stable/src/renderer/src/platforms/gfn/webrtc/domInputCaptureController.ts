@@ -27,9 +27,7 @@ import {
   isStreamPointerLocked,
 } from "../../../lib/pointerLock";
 import {
-  MouseDeltaFilter,
   quantizeMouseDeltaWithResidual,
-  subsampleCoalescedPointerEvents,
 } from "./mouseInput";
 
 interface DomInputCaptureDependencies {
@@ -113,7 +111,6 @@ export class DomInputCaptureController {
   private pendingMouseDyFloat = 0;
   private pendingMouseAbs: { x: number; y: number; width: number; height: number } | null = null;
   private pendingMouseTimestampUs: bigint | null = null;
-  private readonly mouseDeltaFilter = new MouseDeltaFilter();
   private mouseSensitivity = 1;
   private mouseAccelerationPercent = 1;
   private mouseFlushIntervalPreference: MouseFlushIntervalPreference;
@@ -215,7 +212,6 @@ export class DomInputCaptureController {
     this.pendingMouseDyFloat = 0;
     this.pendingMouseAbs = null;
     this.pendingMouseTimestampUs = null;
-    this.mouseDeltaFilter.reset();
     this.mouseFlushLastSendMs = 0;
     this.mouseCoalescedBatchEntries = 0;
     this.mouseFlushBaseIntervalMs = MOUSE_FLUSH_NORMAL_MS;
@@ -557,10 +553,8 @@ export class DomInputCaptureController {
     this.mousePacketsPerSecond = 0;
     this.mousePacketsSentInWindow = 0;
     this.mousePacketRateWindowStartedAtMs = mouseInitNow;
-    this.mouseDeltaFilter.reset();
-    this.mouseDeltaFilter.setRelaxedForRawInput(hasPointerRawUpdate);
     this.dependencies.log(
-      `Mouse input mode: ${pointerMoveEventName ?? "mousemove"}, coalesced=${hasCoalescedEvents ? "yes" : "no"}, flush=${this.mouseFlushIntervalMs}ms (preference=${this.mouseFlushIntervalPreference})`,
+      `Mouse input mode: ${pointerMoveEventName ?? "mousemove"}, raw-unfiltered=yes, ordered=yes, flush=${this.mouseFlushIntervalMs}ms (preference=${this.mouseFlushIntervalPreference})`,
     );
 
     const pointerScaleCache = {
@@ -889,13 +883,15 @@ export class DomInputCaptureController {
         return;
       }
 
-      if (!this.mouseDeltaFilter.update(dx, dy, eventTimestampMs)) {
+      if (!Number.isFinite(dx) || !Number.isFinite(dy) || (dx === 0 && dy === 0)) {
         return;
       }
 
-      // Apply user-configured sensitivity, then optional software acceleration.
-      let adjustedDx = this.mouseDeltaFilter.getX() * this.mouseSensitivity;
-      let adjustedDy = this.mouseDeltaFilter.getY() * this.mouseSensitivity;
+      // Pointer-lock movement is already a relative hardware delta. Preserve it
+      // exactly; rejecting direction reversals or outliers creates a visible
+      // stop followed by a larger accumulated jump.
+      let adjustedDx = dx * this.mouseSensitivity;
+      let adjustedDy = dy * this.mouseSensitivity;
 
       if (this.mouseAccelerationPercent > 1) {
         const speed = Math.hypot(adjustedDx, adjustedDy);
@@ -948,8 +944,7 @@ export class DomInputCaptureController {
       samples: readonly { movementX: number; movementY: number; timeStamp: number }[],
     ): void => {
       const hadBatch = hasPendingMouseMovement();
-      const { events } = subsampleCoalescedPointerEvents(samples, this.mouseCoalescedBatchEntries);
-      for (const sample of events) {
+      for (const sample of samples) {
         queueMouseMovement(sample.movementX, sample.movementY, sample.timeStamp);
       }
       if (
@@ -986,7 +981,12 @@ export class DomInputCaptureController {
           }
         }
 
-        const samples = hasCoalescedEvents ? event.getCoalescedEvents() : [];
+        // pointerrawupdate is already the high-frequency source. Asking it for
+        // coalesced samples can reintroduce older deltas with non-monotonic
+        // timestamps on Windows/Electron.
+        const samples = event.type !== "pointerrawupdate" && hasCoalescedEvents
+          ? event.getCoalescedEvents()
+          : [];
         if (samples.length > 0) {
           processRelativePointerSamples(samples);
           return;
@@ -1598,7 +1598,6 @@ export class DomInputCaptureController {
       this.pendingMouseDyFloat = 0;
       this.pendingMouseAbs = null;
       this.pendingMouseTimestampUs = null;
-      this.mouseDeltaFilter.reset();
       this.pointerLockTarget = null;
       // Unlock keyboard on cleanup
       const nav = navigator as any;

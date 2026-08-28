@@ -1,4 +1,6 @@
 import {
+  INPUT_MOUSE_ABS,
+  INPUT_MOUSE_REL,
   isPartiallyReliableHidTransferEligible,
   partiallyReliableHidMaskForInputType,
 } from "../inputProtocol";
@@ -25,6 +27,12 @@ export function canUsePartiallyReliableInput(
   capabilities: RiInputCapabilities,
   inputType: number,
 ): boolean {
+  // Mouse movement must stay ordered. Flush coalescing already reduces the
+  // packet rate, while an unordered SCTP channel can visibly apply adjacent
+  // deltas out of order or discard one half of a direction change.
+  if (inputType === INPUT_MOUSE_ABS || inputType === INPUT_MOUSE_REL) {
+    return false;
+  }
   if (!channelOpen || !isPartiallyReliableHidTransferEligible(inputType)) {
     return false;
   }

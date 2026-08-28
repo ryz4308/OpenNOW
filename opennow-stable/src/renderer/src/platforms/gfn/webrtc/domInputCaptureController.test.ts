@@ -230,6 +230,24 @@ test("fixed mouse flush preference overrides automatic platform detection", () =
   }
 });
 
+test("raw direction reversals are preserved instead of filtered into a later jump", () => {
+  const harness = installMouseHarness({
+    mouseSensitivity: 1,
+    resolution: "1920x1080",
+    mouseFlushIntervalPreference: 4,
+  });
+  try {
+    harness.dispatchMouseMove(10, 1);
+    harness.dispatchMouseMove(-10, 1.5);
+    assert.equal(harness.pendingTimerCount(), 1);
+    harness.runNextTimer(4);
+    assert.deepEqual(harness.sentInputTypes, []);
+    assert.equal(harness.controller.getMouseDiagnostics().residualMagnitude, 0);
+  } finally {
+    harness.restoreGlobals();
+  }
+});
+
 test("negative half-pixel residual parks without synchronous recursion and resumes on input", () => {
   const harness = installMouseHarness({ mouseSensitivity: 0.5, resolution: "4x4" });
   try {

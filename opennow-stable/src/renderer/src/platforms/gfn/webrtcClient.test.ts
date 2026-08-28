@@ -14,7 +14,7 @@ import {
   resolveStatsBurstWindow,
   subsampleCoalescedPointerEvents,
 } from "./webrtcClient";
-import { INPUT_KEY_DOWN, INPUT_MOUSE_REL } from "./inputProtocol";
+import { INPUT_KEY_DOWN, INPUT_MOUSE_ABS, INPUT_MOUSE_REL } from "./inputProtocol";
 
 test("decoder pressure requires a coupled backlog, drop burst, or decode saturation", () => {
   const stable = classifyDecoderPressureSample({
@@ -81,7 +81,8 @@ test("partially-reliable input policy requires channel, negotiated HID, and tran
   assert.equal(canUsePartiallyReliableGamepad(true, capabilities, 0), true);
   assert.equal(canUsePartiallyReliableGamepad(true, capabilities, 1), false);
   assert.equal(canUsePartiallyReliableGamepad(false, capabilities, 2), false);
-  assert.equal(canUsePartiallyReliableInput(true, capabilities, INPUT_MOUSE_REL), true);
+  assert.equal(canUsePartiallyReliableInput(true, capabilities, INPUT_MOUSE_REL), false);
+  assert.equal(canUsePartiallyReliableInput(true, capabilities, INPUT_MOUSE_ABS), false);
   assert.equal(canUsePartiallyReliableInput(true, capabilities, INPUT_KEY_DOWN), false);
 });
 
