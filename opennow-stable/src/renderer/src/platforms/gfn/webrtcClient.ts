@@ -121,6 +121,33 @@ export {
   type RiInputCapabilities,
 } from "./webrtc/inputChannelPolicy";
 
+const STATS_NORMAL_INTERVAL_MS = 1_000;
+const STATS_BURST_INTERVAL_MS = 500;
+const STATS_BURST_WINDOW_MS = 5_000;
+const STATS_BURST_COOLDOWN_MS = 30_000;
+
+export function resolveStatsBurstWindow(input: {
+  nowMs: number;
+  packetsDelta: number;
+  lostDelta: number;
+  burstUntilMs: number;
+  cooldownUntilMs: number;
+}): { burstUntilMs: number; cooldownUntilMs: number } {
+  const totalPackets = input.packetsDelta + input.lostDelta;
+  const lossPercent = totalPackets > 0 ? (input.lostDelta / totalPackets) * 100 : 0;
+  const significantLoss = input.lostDelta >= 8 || lossPercent >= 1;
+  if (!significantLoss || input.nowMs < input.cooldownUntilMs) {
+    return {
+      burstUntilMs: input.burstUntilMs,
+      cooldownUntilMs: input.cooldownUntilMs,
+    };
+  }
+  return {
+    burstUntilMs: input.nowMs + STATS_BURST_WINDOW_MS,
+    cooldownUntilMs: input.nowMs + STATS_BURST_COOLDOWN_MS,
+  };
+}
+
 interface OfferSettings {
   codec: VideoCodec;
   colorQuality: ColorQuality;
@@ -323,6 +350,7 @@ export class GfnWebRtcClient {
   private statsPollInFlight = false;
   private statsPollingActive = false;
   private statsBurstUntilMs = Number.NEGATIVE_INFINITY;
+  private statsBurstCooldownUntilMs = Number.NEGATIVE_INFINITY;
   private externalEscapeCleanup: (() => void) | null = null;
   private queuedCandidates: RTCIceCandidateInit[] = [];
 
@@ -1117,9 +1145,12 @@ export class GfnWebRtcClient {
     }
     this.statsPollingActive = true;
     this.statsBurstUntilMs = Number.NEGATIVE_INFINITY;
+    this.statsBurstCooldownUntilMs = Number.NEGATIVE_INFINITY;
     const scheduleNext = (): void => {
       if (!this.statsPollingActive) return;
-      const delayMs = performance.now() < this.statsBurstUntilMs ? 250 : 1_000;
+      const delayMs = performance.now() < this.statsBurstUntilMs
+        ? STATS_BURST_INTERVAL_MS
+        : STATS_NORMAL_INTERVAL_MS;
       this.statsTimer = window.setTimeout(poll, delayMs);
     };
     const poll = (): void => {
@@ -1238,14 +1269,20 @@ export class GfnWebRtcClient {
         // Calculate packet loss percentage over the interval
         const packetsDelta = packetsReceived - prevSample.packetsReceived;
         const lostDelta = packetsLost - prevSample.packetsLost;
-        if (lostDelta > 0) {
-          this.statsBurstUntilMs = Math.max(this.statsBurstUntilMs, now + 10_000);
-        }
         if (packetsDelta > 0) {
           const totalPackets = packetsDelta + lostDelta;
           this.diagnostics.packetLossPercent = totalPackets > 0
             ? (lostDelta / totalPackets) * 100
             : 0;
+          const burst = resolveStatsBurstWindow({
+            nowMs: now,
+            packetsDelta,
+            lostDelta,
+            burstUntilMs: this.statsBurstUntilMs,
+            cooldownUntilMs: this.statsBurstCooldownUntilMs,
+          });
+          this.statsBurstUntilMs = burst.burstUntilMs;
+          this.statsBurstCooldownUntilMs = burst.cooldownUntilMs;
         }
       }
 

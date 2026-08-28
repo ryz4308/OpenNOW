@@ -11,6 +11,7 @@ import {
   classifyStreamLagReason,
   evaluateControllerOverlayShortcutGate,
   quantizeMouseDeltaWithResidual,
+  resolveStatsBurstWindow,
   subsampleCoalescedPointerEvents,
 } from "./webrtcClient";
 import { INPUT_KEY_DOWN, INPUT_MOUSE_REL } from "./inputProtocol";
@@ -227,6 +228,33 @@ test("subsampleCoalescedPointerEvents limits large coalesced bursts without drop
     events.reduce((total, event) => total + event.movementY, 0),
     samples.reduce((total, event) => total + event.movementY, 0),
   );
+});
+
+test("stats burst is bounded and ignores continuous loss until cooldown expires", () => {
+  const first = resolveStatsBurstWindow({
+    nowMs: 1_000,
+    packetsDelta: 1_000,
+    lostDelta: 10,
+    burstUntilMs: Number.NEGATIVE_INFINITY,
+    cooldownUntilMs: Number.NEGATIVE_INFINITY,
+  });
+  assert.deepEqual(first, { burstUntilMs: 6_000, cooldownUntilMs: 31_000 });
+
+  const continuous = resolveStatsBurstWindow({
+    nowMs: 5_000,
+    packetsDelta: 1_000,
+    lostDelta: 20,
+    ...first,
+  });
+  assert.deepEqual(continuous, first);
+
+  const next = resolveStatsBurstWindow({
+    nowMs: 31_000,
+    packetsDelta: 1_000,
+    lostDelta: 20,
+    ...continuous,
+  });
+  assert.deepEqual(next, { burstUntilMs: 36_000, cooldownUntilMs: 61_000 });
 });
 
 const stableLagParams = {

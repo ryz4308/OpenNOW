@@ -186,3 +186,46 @@ test("starts a fresh report for a new remote session and exposes SESSION_EXIT to
   assert.equal(JSON.stringify(report).includes("first-secret-id"), false);
   unsubscribe();
 });
+
+test("checkpoint reports stay bounded while completed reports retain the full session", () => {
+  const recorder = new StreamDiagnosticsRecorder();
+  const startedAt = Date.parse("2026-08-28T12:00:00.000Z");
+  recorder.beginSession("bounded-checkpoint", { resilientNetworkProfile: "current" }, startedAt);
+
+  for (let index = 0; index < 500; index += 1) {
+    recorder.recordEvent({ type: "diagnostic event", detail: `event ${index}` }, startedAt + index * 1_000);
+    recorder.record({
+      ...defaultDiagnostics(),
+      sessionId: "bounded-checkpoint",
+      packetsReceived: index * 100,
+      framesReceived: index * 60,
+      framesDecoded: index * 60,
+    }, startedAt + index * 1_000);
+  }
+
+  const checkpoint = recorder.exportCheckpointReport(startedAt + 500_000) as any;
+  const completed = recorder.exportReport(startedAt + 500_000) as any;
+  assert.equal(checkpoint.checkpoint, true);
+  assert.equal(checkpoint.samples.length, 120);
+  assert.equal(checkpoint.events.length, 400);
+  assert.equal(completed.checkpoint, false);
+  assert.equal(completed.samples.length, 500);
+  assert.ok(completed.events.length > checkpoint.events.length);
+});
+
+test("RTP-loss diagnostics burst is bounded and cannot be extended continuously", () => {
+  const recorder = new StreamDiagnosticsRecorder();
+  const startedAt = Date.parse("2026-08-28T12:00:00.000Z");
+  recorder.beginSession("bounded-burst", {}, startedAt);
+  recorder.record({ ...defaultDiagnostics(), packetsReceived: 1_000 }, startedAt);
+  recorder.record({ ...defaultDiagnostics(), packetsReceived: 1_100, packetsLost: 1 }, startedAt + 1_000);
+  assert.equal(recorder.isIncidentBurstActive(startedAt + 4_999), true);
+
+  recorder.record({ ...defaultDiagnostics(), packetsReceived: 1_200, packetsLost: 2 }, startedAt + 4_500);
+  assert.equal(recorder.isIncidentBurstActive(startedAt + 6_001), false);
+
+  recorder.record({ ...defaultDiagnostics(), packetsReceived: 1_300, packetsLost: 3 }, startedAt + 20_000);
+  assert.equal(recorder.isIncidentBurstActive(startedAt + 20_001), false);
+  recorder.record({ ...defaultDiagnostics(), packetsReceived: 1_400, packetsLost: 4 }, startedAt + 31_000);
+  assert.equal(recorder.isIncidentBurstActive(startedAt + 31_001), true);
+});

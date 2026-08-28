@@ -148,7 +148,7 @@ const FREE_TIER_30_MIN_WARNING_SECONDS = 30 * 60;
 const FREE_TIER_15_MIN_WARNING_SECONDS = 15 * 60;
 const FREE_TIER_FINAL_MINUTE_WARNING_SECONDS = 60;
 const STREAM_WARNING_VISIBILITY_MS = 15 * 1000;
-const DIAGNOSTICS_CHECKPOINT_INTERVAL_MS = 5_000;
+const DIAGNOSTICS_CHECKPOINT_INTERVAL_MS = 30_000;
 
 type AppPage = "home" | "library" | "settings";
 type ExitPromptState = { open: boolean; gameTitle: string };
@@ -297,7 +297,9 @@ export function App(): JSX.Element {
     async (phase: "checkpoint" | "completed"): Promise<void> => {
       await window.openNow.saveDiagnosticsSession({
         phase,
-        report: streamDiagnosticsRecorder.exportReport(),
+        report: phase === "checkpoint"
+          ? streamDiagnosticsRecorder.exportCheckpointReport()
+          : streamDiagnosticsRecorder.exportReport(),
       });
     },
     [],
@@ -369,7 +371,7 @@ export function App(): JSX.Element {
       if (!stopped) {
         timer = window.setTimeout(
           () => void probe(),
-          streamDiagnosticsRecorder.isIncidentBurstActive() ? 250 : 1_000,
+          streamDiagnosticsRecorder.isIncidentBurstActive() ? 500 : 1_000,
         );
       }
     };
@@ -1121,10 +1123,7 @@ export function App(): JSX.Element {
         }
       }
       if (!stopped) {
-        timer = window.setTimeout(
-          () => void poll(),
-          streamDiagnosticsRecorder.isIncidentBurstActive() ? 1_000 : 5_000,
-        );
+        timer = window.setTimeout(() => void poll(), 5_000);
       }
     };
     void poll();

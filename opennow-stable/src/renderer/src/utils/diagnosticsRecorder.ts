@@ -36,8 +36,11 @@ interface ActiveIncident {
 }
 
 const SAMPLE_INTERVAL_MS = 1_000;
-const INCIDENT_SAMPLE_INTERVAL_MS = 250;
-const INCIDENT_BURST_WINDOW_MS = 10_000;
+const INCIDENT_SAMPLE_INTERVAL_MS = 500;
+const INCIDENT_BURST_WINDOW_MS = 5_000;
+const INCIDENT_BURST_COOLDOWN_MS = 30_000;
+const CHECKPOINT_SAMPLE_LIMIT = 120;
+const CHECKPOINT_EVENT_LIMIT = 400;
 const MAX_SAMPLES = 3_600;
 const MAX_EVENTS = 5_000;
 const SPIKE_EVENT_COOLDOWN_MS = 5_000;
@@ -55,6 +58,7 @@ export class StreamDiagnosticsRecorder {
   private readonly streamAliases = new Map<string, string>();
   private rtpLossIncident: { startedAtMs: number; initialPacketsLost: number; lastLossAtMs: number } | null = null;
   private rtpLossBurstUntilMs = Number.NEGATIVE_INFINITY;
+  private rtpLossBurstCooldownUntilMs = Number.NEGATIVE_INFINITY;
   private lastGatewayPing: GatewayPingResult | null = null;
   private readonly eventListeners = new Set<(event: DiagnosticEvent) => void>();
 
@@ -79,6 +83,7 @@ export class StreamDiagnosticsRecorder {
     this.streamAliases.clear();
     this.rtpLossIncident = null;
     this.rtpLossBurstUntilMs = Number.NEGATIVE_INFINITY;
+    this.rtpLossBurstCooldownUntilMs = Number.NEGATIVE_INFINITY;
     this.lastGatewayPing = null;
     return true;
   }
@@ -148,7 +153,25 @@ export class StreamDiagnosticsRecorder {
   }
 
   exportReport(generatedAtMs = Date.now()): Record<string, unknown> {
-    const finishedAt = this.samples.at(-1)?.timestamp ?? new Date(generatedAtMs).toISOString();
+    return this.buildReport(this.samples, this.events, generatedAtMs, false);
+  }
+
+  exportCheckpointReport(generatedAtMs = Date.now()): Record<string, unknown> {
+    return this.buildReport(
+      this.samples.slice(-CHECKPOINT_SAMPLE_LIMIT),
+      this.events.slice(-CHECKPOINT_EVENT_LIMIT),
+      generatedAtMs,
+      true,
+    );
+  }
+
+  private buildReport(
+    samples: DiagnosticSample[],
+    events: DiagnosticEvent[],
+    generatedAtMs: number,
+    checkpoint: boolean,
+  ): Record<string, unknown> {
+    const finishedAt = samples.at(-1)?.timestamp ?? new Date(generatedAtMs).toISOString();
     return {
       schemaVersion: 6,
       generatedAt: new Date(generatedAtMs).toISOString(),
@@ -164,15 +187,16 @@ export class StreamDiagnosticsRecorder {
         "Gateway, CloudMatch, ICE, RTP, bitrate, keyframe, track, and exit lifecycle events are sanitized before export.",
         "NETWORK_STALL and RENDER_STALL are diagnostic classifications, not proof of a single root cause.",
       ],
-      summary: this.buildSummary(),
+      checkpoint,
+      summary: this.buildSummary(samples, events),
       activeIncidents: [...this.incidents.entries()].map(([type, incident]) => ({
         type,
         startedAt: new Date(incident.startedAtMs).toISOString(),
         durationMs: Math.max(0, generatedAtMs - incident.startedAtMs),
         detail: incident.detail,
       })),
-      events: this.events,
-      samples: this.samples,
+      events,
+      samples,
     };
   }
 
@@ -274,7 +298,10 @@ export class StreamDiagnosticsRecorder {
   ): void {
     const delta = current.packetsLost - previous.packetsLost;
     if (delta > 0) {
-      this.rtpLossBurstUntilMs = Math.max(this.rtpLossBurstUntilMs, nowMs + INCIDENT_BURST_WINDOW_MS);
+      if (nowMs >= this.rtpLossBurstCooldownUntilMs) {
+        this.rtpLossBurstUntilMs = nowMs + INCIDENT_BURST_WINDOW_MS;
+        this.rtpLossBurstCooldownUntilMs = nowMs + INCIDENT_BURST_COOLDOWN_MS;
+      }
       if (!this.rtpLossIncident) {
         this.rtpLossIncident = {
           startedAtMs: nowMs,
@@ -448,37 +475,40 @@ export class StreamDiagnosticsRecorder {
     return alias;
   }
 
-  private buildSummary(): Record<string, unknown> {
+  private buildSummary(
+    samples: DiagnosticSample[] = this.samples,
+    events: DiagnosticEvent[] = this.events,
+  ): Record<string, unknown> {
     const metrics = {
-      packetLossPercent: this.samples.map((sample) => sample.packetLossPercent),
-      rttMs: this.samples.map((sample) => sample.rttMs),
-      jitterMs: this.samples.map((sample) => sample.jitterMs),
-      bitrateKbps: this.samples.map((sample) => sample.bitrateKbps),
-      receiveFps: this.samples.map((sample) => sample.receiveFps),
-      decodeFps: this.samples.map((sample) => sample.decodeFps),
-      renderFps: this.samples.map((sample) => sample.renderFps),
-      decodeTimeMs: this.samples.map((sample) => sample.decodeTimeMs),
-      jitterBufferDelayMs: this.samples.map((sample) => sample.jitterBufferDelayMs),
+      packetLossPercent: samples.map((sample) => sample.packetLossPercent),
+      rttMs: samples.map((sample) => sample.rttMs),
+      jitterMs: samples.map((sample) => sample.jitterMs),
+      bitrateKbps: samples.map((sample) => sample.bitrateKbps),
+      receiveFps: samples.map((sample) => sample.receiveFps),
+      decodeFps: samples.map((sample) => sample.decodeFps),
+      renderFps: samples.map((sample) => sample.renderFps),
+      decodeTimeMs: samples.map((sample) => sample.decodeTimeMs),
+      jitterBufferDelayMs: samples.map((sample) => sample.jitterBufferDelayMs),
     };
     return {
-      sampleCount: this.samples.length,
-      eventCount: this.events.length,
-      durationSeconds: this.samples.length > 1
-        ? Math.round((Date.parse(this.samples.at(-1)!.timestamp) - Date.parse(this.samples[0]!.timestamp)) / 1000)
+      sampleCount: samples.length,
+      eventCount: events.length,
+      durationSeconds: samples.length > 1
+        ? Math.round((Date.parse(samples.at(-1)!.timestamp) - Date.parse(samples[0]!.timestamp)) / 1000)
         : 0,
-      incidents: countEvents(this.events, ["NETWORK_STALL", "RENDER_STALL", "WEBRTC_FREEZE_REPORTED"]),
-      recoveries: this.events.filter((event) => event.type === "RECOVERY_NOTICED").length,
+      incidents: countEvents(events, ["NETWORK_STALL", "RENDER_STALL", "WEBRTC_FREEZE_REPORTED"]),
+      recoveries: events.filter((event) => event.type === "RECOVERY_NOTICED").length,
       metrics: Object.fromEntries(Object.entries(metrics).map(([name, values]) => [name, summarize(values)])),
-      finalCounters: this.samples.length > 0 ? {
-        framesReceived: this.samples.at(-1)!.framesReceived,
-        framesDecoded: this.samples.at(-1)!.framesDecoded,
-        framesDropped: this.samples.at(-1)!.framesDropped,
-        keyFramesDecoded: this.samples.at(-1)!.keyFramesDecoded,
-        nackCount: this.samples.at(-1)!.nackCount,
-        pliCount: this.samples.at(-1)!.pliCount,
-        firCount: this.samples.at(-1)!.firCount,
-        freezeCount: this.samples.at(-1)!.freezeCount,
-        totalFreezesDurationMs: this.samples.at(-1)!.totalFreezesDurationMs,
+      finalCounters: samples.length > 0 ? {
+        framesReceived: samples.at(-1)!.framesReceived,
+        framesDecoded: samples.at(-1)!.framesDecoded,
+        framesDropped: samples.at(-1)!.framesDropped,
+        keyFramesDecoded: samples.at(-1)!.keyFramesDecoded,
+        nackCount: samples.at(-1)!.nackCount,
+        pliCount: samples.at(-1)!.pliCount,
+        firCount: samples.at(-1)!.firCount,
+        freezeCount: samples.at(-1)!.freezeCount,
+        totalFreezesDurationMs: samples.at(-1)!.totalFreezesDurationMs,
       } : null,
     };
   }
