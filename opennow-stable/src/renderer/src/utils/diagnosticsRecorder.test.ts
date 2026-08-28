@@ -159,3 +159,30 @@ test("records network and renderer incidents without exposing the raw session id
   assert.equal(summary.incidents.RENDER_STALL, 1);
   assert.equal(summary.recoveries, 2);
 });
+
+test("starts a fresh report for a new remote session and exposes SESSION_EXIT to persistence", () => {
+  const recorder = new StreamDiagnosticsRecorder();
+  const exits: string[] = [];
+  const unsubscribe = recorder.subscribeEvents((event) => {
+    if (event.type === "SESSION_EXIT") exits.push(event.detail);
+  });
+
+  assert.equal(recorder.beginSession("first-secret-id", {
+    resilientNetworkProfile: "balanced",
+  }, Date.parse("2026-08-28T12:00:00.000Z")), true);
+  recorder.record({ ...defaultDiagnostics(), sessionId: "first-secret-id" }, Date.parse("2026-08-28T12:00:01.000Z"));
+  assert.equal(recorder.beginSession("first-secret-id", {
+    resilientNetworkProfile: "survival",
+  }, Date.parse("2026-08-28T12:00:02.000Z")), false);
+  recorder.recordEvent({
+    type: "session exit",
+    detail: "exact transport failure",
+    values: { reasonCode: "transport_failed" },
+  }, Date.parse("2026-08-28T12:00:03.000Z"));
+
+  const report = recorder.exportReport(Date.parse("2026-08-28T12:00:03.000Z")) as any;
+  assert.equal(report.context.resilientNetworkProfile, "survival");
+  assert.deepEqual(exits, ["exact transport failure"]);
+  assert.equal(JSON.stringify(report).includes("first-secret-id"), false);
+  unsubscribe();
+});

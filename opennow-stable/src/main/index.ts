@@ -80,6 +80,7 @@ import { getReleaseHighlightsPayload, shouldShowReleaseHighlights } from "./rele
 import { shutdownMainTelemetry, syncMainTelemetry } from "./telemetry/posthog";
 import { createMainWindow } from "./window/mainWindow";
 import { resolveAppInstanceProfile } from "./appInstance";
+import { StreamDiagnosticsPersistence } from "./services/streamDiagnosticsPersistence";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -92,6 +93,9 @@ if (appInstanceProfile.isSecondary) {
   app.setPath("userData", appInstanceProfile.userDataPath);
   app.setPath("sessionData", appInstanceProfile.userDataPath);
 }
+const streamDiagnosticsPersistence = new StreamDiagnosticsPersistence(
+  join(app.getPath("userData"), "stream-diagnostics"),
+);
 
 // Configure Chromium video, WebRTC, and input behavior before app.whenReady().
 
@@ -246,6 +250,13 @@ function runShutdownCleanup(reason = "app-quit"): void {
   }
 
   isShutdownCleanupComplete = true;
+  void streamDiagnosticsPersistence.finalizeUnexpected(
+    "application_shutdown",
+    "OpenNOW application shutdown: " + reason,
+    "application",
+  ).catch((error) => {
+    console.warn("[Diagnostics] Failed to finalize diagnostics during shutdown:", error);
+  });
   console.log(`[Main] Running shutdown cleanup (${reason})`);
 
   refreshScheduler.stop();
@@ -452,6 +463,14 @@ function createMainWindowDeps() {
       nativeRawInputOwnsEscapeRuntime = ownsEscape;
     },
     isAppShutdownRequested: () => isShutdownRequested,
+    onRendererUnexpectedTermination: (reason: string, exitCode: number) => {
+      void streamDiagnosticsPersistence.finalizeUnexpected(
+        "renderer_" + reason,
+        "Renderer process gone: " + reason + " (exit code " + exitCode + ")",
+      ).catch((error) => {
+        console.warn("[Diagnostics] Failed to finalize renderer crash diagnostics:", error);
+      });
+    },
   };
 }
 
@@ -517,6 +536,7 @@ function registerIpcHandlers(): void {
     getAppUpdater: () => appUpdater,
     getSignalingCoordinator: () => signalingCoordinator,
     discordMonitor,
+    streamDiagnosticsPersistence,
     requestAppShutdown,
   });
 }
@@ -544,6 +564,7 @@ app.whenReady().then(async () => {
     console.log(`[Main] Secondary instance profile: ${appInstanceProfile.userDataPath}`);
   }
   initSessionProxyAuth();
+  await streamDiagnosticsPersistence.initialize();
 
   await cacheManager.initialize();
 

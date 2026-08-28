@@ -38,6 +38,7 @@ export interface CreateMainWindowDeps {
   getNativeRawInputOwnsEscape(): boolean;
   setNativeRawInputOwnsEscape(ownsEscape: boolean): void;
   isAppShutdownRequested(): boolean;
+  onRendererUnexpectedTermination(reason: string, exitCode: number): void;
 }
 
 export async function createMainWindow(
@@ -129,6 +130,7 @@ export async function createMainWindow(
       return;
     }
     console.error("[Main] Renderer process gone:", details);
+    deps.onRendererUnexpectedTermination(details.reason, details.exitCode);
     captureMainException(new Error(`Renderer process gone: ${details.reason}`), {
       reason: details.reason,
       exit_code: details.exitCode,

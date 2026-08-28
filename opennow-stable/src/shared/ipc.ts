@@ -18,6 +18,7 @@ export const IPC_CHANNELS = {
   CONSOLE_PIN_VERIFY: "console:pin-verify",
   PING_REGIONS: "gfn:ping-regions",
   DIAGNOSTICS_GATEWAY_PING: "diagnostics:gateway-ping",
+  DIAGNOSTICS_SESSION_SAVE: "diagnostics:session-save",
   SUBSCRIPTION_FETCH: "subscription:fetch",
   PERSISTENT_STORAGE_LOCATIONS_FETCH: "persistent-storage:locations:fetch",
   PERSISTENT_STORAGE_RESET: "persistent-storage:reset",

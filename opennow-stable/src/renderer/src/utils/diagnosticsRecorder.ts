@@ -43,7 +43,8 @@ const MAX_EVENTS = 5_000;
 const SPIKE_EVENT_COOLDOWN_MS = 5_000;
 
 export class StreamDiagnosticsRecorder {
-  private readonly startedAtMs = Date.now();
+  private startedAtMs = Date.now();
+  private sessionKey: string | null = null;
   private lastSampleAtMs = Number.NEGATIVE_INFINITY;
   private context: DiagnosticsRecorderContext = {};
   private samples: DiagnosticSample[] = [];
@@ -55,6 +56,37 @@ export class StreamDiagnosticsRecorder {
   private rtpLossIncident: { startedAtMs: number; initialPacketsLost: number; lastLossAtMs: number } | null = null;
   private rtpLossBurstUntilMs = Number.NEGATIVE_INFINITY;
   private lastGatewayPing: GatewayPingResult | null = null;
+  private readonly eventListeners = new Set<(event: DiagnosticEvent) => void>();
+
+  beginSession(
+    sessionKey: string,
+    context: DiagnosticsRecorderContext,
+    startedAtMs = Date.now(),
+  ): boolean {
+    if (this.sessionKey === sessionKey) {
+      this.setContext(context);
+      return false;
+    }
+    this.sessionKey = sessionKey;
+    this.startedAtMs = startedAtMs;
+    this.lastSampleAtMs = Number.NEGATIVE_INFINITY;
+    this.context = { ...context };
+    this.samples = [];
+    this.events = [];
+    this.previous = null;
+    this.incidents.clear();
+    this.lastSpikeEventAtMs.clear();
+    this.streamAliases.clear();
+    this.rtpLossIncident = null;
+    this.rtpLossBurstUntilMs = Number.NEGATIVE_INFINITY;
+    this.lastGatewayPing = null;
+    return true;
+  }
+
+  subscribeEvents(listener: (event: DiagnosticEvent) => void): () => void {
+    this.eventListeners.add(listener);
+    return () => this.eventListeners.delete(listener);
+  }
 
   setContext(context: DiagnosticsRecorderContext): void {
     this.context = { ...this.context, ...context };
@@ -64,9 +96,10 @@ export class StreamDiagnosticsRecorder {
     event: StreamLifecycleDiagnosticEvent,
     recordedAtMs = Date.now(),
   ): void {
+    const type = normalizeEventType(event.type);
     this.pushEvent(
       recordedAtMs,
-      normalizeEventType(event.type),
+      type,
       redactDiagnosticDetail(event.detail),
       sanitizeDiagnosticValues(event.values),
     );
@@ -394,14 +427,16 @@ export class StreamDiagnosticsRecorder {
     detail: string,
     values?: Record<string, number | string | boolean>,
   ): void {
-    this.events.push({
+    const event = {
       timestamp: new Date(nowMs).toISOString(),
       elapsedMs: Math.max(0, nowMs - this.startedAtMs),
       type,
       detail,
       values,
-    });
+    };
+    this.events.push(event);
     if (this.events.length > MAX_EVENTS) this.events.shift();
+    for (const listener of this.eventListeners) listener(event);
   }
 
   private aliasForSession(sessionId: string): string {

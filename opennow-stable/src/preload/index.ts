@@ -60,6 +60,8 @@ import type {
   GameAccountConnectionsResult,
   GameAccountOperationResult,
   GatewayPingResult,
+  DiagnosticsSessionSaveRequest,
+  DiagnosticsSessionSaveResult,
 } from "@shared/gfn";
 import type { DiscordActivityUpdate } from "@shared/discord";
 import type { DesktopBugReportReceipt, DesktopBugReportRequest } from "@shared/bugReport";
@@ -257,6 +259,10 @@ const api: OpenNowApi = {
   pingRegions: (regions: StreamRegion[]) => ipcRenderer.invoke(IPC_CHANNELS.PING_REGIONS, regions),
   pingDefaultGateway: (): Promise<GatewayPingResult> =>
     ipcRenderer.invoke(IPC_CHANNELS.DIAGNOSTICS_GATEWAY_PING),
+  saveDiagnosticsSession: (
+    input: DiagnosticsSessionSaveRequest,
+  ): Promise<DiagnosticsSessionSaveResult> =>
+    ipcRenderer.invoke(IPC_CHANNELS.DIAGNOSTICS_SESSION_SAVE, input),
   saveScreenshot: (input: ScreenshotSaveRequest) => ipcRenderer.invoke(IPC_CHANNELS.SCREENSHOT_SAVE, input),
   listScreenshots: () => ipcRenderer.invoke(IPC_CHANNELS.SCREENSHOT_LIST),
   deleteScreenshot: (input: ScreenshotDeleteRequest) => ipcRenderer.invoke(IPC_CHANNELS.SCREENSHOT_DELETE, input),

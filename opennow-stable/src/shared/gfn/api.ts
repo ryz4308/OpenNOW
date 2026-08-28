@@ -103,6 +103,16 @@ export interface GatewayPingResult {
   failure: "none" | "gateway-not-found" | "timeout" | "unreachable" | "probe-error";
 }
 
+export interface DiagnosticsSessionSaveRequest {
+  phase: "checkpoint" | "completed";
+  report: Record<string, unknown>;
+}
+
+export interface DiagnosticsSessionSaveResult {
+  fullDiagnosticsPath: string | null;
+  summaryPath: string | null;
+}
+
 export interface OpenNowApi {
   getAuthSession(input?: AuthSessionRequest): Promise<AuthSessionResult>;
   getLoginProviders(): Promise<LoginProvider[]>;
@@ -193,6 +203,8 @@ export interface OpenNowApi {
   pingRegions(regions: StreamRegion[]): Promise<PingResult[]>;
   /** Probe the selected local default gateway without exposing its address to the renderer. */
   pingDefaultGateway(): Promise<GatewayPingResult>;
+  /** Checkpoint or finalize the automatic per-session diagnostics files. */
+  saveDiagnosticsSession(input: DiagnosticsSessionSaveRequest): Promise<DiagnosticsSessionSaveResult>;
 
   /** Persist a PNG screenshot from a renderer-generated data URL */
   saveScreenshot(input: ScreenshotSaveRequest): Promise<ScreenshotEntry>;

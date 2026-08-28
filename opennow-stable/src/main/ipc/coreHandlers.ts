@@ -21,6 +21,8 @@ import type {
   ThankYouDataResult,
   GpuBackendInfo,
   GatewayPingResult,
+  DiagnosticsSessionSaveRequest,
+  DiagnosticsSessionSaveResult,
 } from "@shared/gfn";
 import { exportLogs } from "@shared/logger";
 import { provisionZortosCommunityProxy } from "../community/provisionSessionProxy";
@@ -50,6 +52,7 @@ import { EMPTY_GPU_BACKEND_INFO, getGpuBackendInfo } from "../gpuInfo";
 import { applyNativeAppTheme } from "../window/windowTheme";
 import type { DesktopBugReportRequest, DesktopBugReportReceipt } from "@shared/bugReport";
 import { uploadDesktopBugReport } from "../services/desktopBugReports";
+import type { StreamDiagnosticsPersistence } from "../services/streamDiagnosticsPersistence";
 
 type DiscordMonitor = {
   start(): void;
@@ -72,6 +75,7 @@ export interface CoreIpcHandlerDeps {
   getAppUpdater(): AppUpdaterController | null;
   getSignalingCoordinator(): SignalingCoordinator | null;
   discordMonitor: DiscordMonitor;
+  streamDiagnosticsPersistence: StreamDiagnosticsPersistence;
   requestAppShutdown(options?: {
     reason?: string;
     forceExitFallback?: boolean;
@@ -434,6 +438,14 @@ export function registerCoreIpcHandlers(deps: CoreIpcHandlerDeps): void {
   ipcMain.handle(
     IPC_CHANNELS.DIAGNOSTICS_GATEWAY_PING,
     async (): Promise<GatewayPingResult> => pingDefaultGateway(),
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.DIAGNOSTICS_SESSION_SAVE,
+    async (
+      _event,
+      input: DiagnosticsSessionSaveRequest,
+    ): Promise<DiagnosticsSessionSaveResult> => deps.streamDiagnosticsPersistence.save(input),
   );
 
   // PrintedWaste queue API — fetched from main process so User-Agent can be set

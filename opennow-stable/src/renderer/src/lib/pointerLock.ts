@@ -26,3 +26,16 @@ export function didStreamPointerLockExit(
 ): boolean {
   return pointerLockWasActive && !pointerLockIsActive;
 }
+
+export function resolveAutomaticCursorRelock(input: {
+  armed: boolean;
+  streamActive: boolean;
+  videoReady: boolean;
+  inputReady: boolean;
+  pointerLocked: boolean;
+}): "wait" | "preserved" | "restore" {
+  if (!input.armed || !input.streamActive || !input.videoReady || !input.inputReady) {
+    return "wait";
+  }
+  return input.pointerLocked ? "preserved" : "restore";
+}

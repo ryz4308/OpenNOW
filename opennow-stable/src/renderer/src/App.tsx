@@ -78,7 +78,11 @@ import {
 import { resolveInstallToPlayStorageRegionUrl } from "./lib/launchOwnership";
 import { resolveAppLaunchMode } from "./lib/appLaunchMode";
 import { hasAnyEligiblePrintedWasteZone, isAllianceStreamingBaseUrl } from "./lib/printedWaste";
-import { getStreamPointerLockTarget, isStreamPointerLocked } from "./lib/pointerLock";
+import {
+  getStreamPointerLockTarget,
+  isStreamPointerLocked,
+  resolveAutomaticCursorRelock,
+} from "./lib/pointerLock";
 import { normalizeMembershipTier } from "./lib/queueAds";
 import { clearRuntimeSnapshot, type RuntimeSnapshot } from "./lib/runtimeSnapshot";
 import { getEnabledSessionProxyUrl } from "./lib/sessionProxy";
@@ -144,6 +148,7 @@ const FREE_TIER_30_MIN_WARNING_SECONDS = 30 * 60;
 const FREE_TIER_15_MIN_WARNING_SECONDS = 15 * 60;
 const FREE_TIER_FINAL_MINUTE_WARNING_SECONDS = 60;
 const STREAM_WARNING_VISIBILITY_MS = 15 * 1000;
+const DIAGNOSTICS_CHECKPOINT_INTERVAL_MS = 5_000;
 
 type AppPage = "home" | "library" | "settings";
 type ExitPromptState = { open: boolean; gameTitle: string };
@@ -190,6 +195,10 @@ export function App(): JSX.Element {
   const diagnosticsVideoReady = useStreamDiagnosticsSelector(
     diagnosticsStore,
     (stats) => stats.nativeRendererActive || stats.framesDecoded > 0,
+  );
+  const diagnosticsInputReady = useStreamDiagnosticsSelector(
+    diagnosticsStore,
+    (stats) => stats.inputReady,
   );
 
   const { runtime: streamRuntime, recovery, snapshot } = useStreamSession();
@@ -265,6 +274,8 @@ export function App(): JSX.Element {
   const { playtime, startSession: startPlaytimeSession, endSession: endPlaytimeSession } = usePlaytime();
   const sessionElapsedSeconds = useElapsedSeconds(sessionStartedAtMs, streamStatus === "streaming");
   const isStreaming = streamStatus === "streaming";
+  const cursorRelockAfterRecoveryRef = useRef(false);
+  const seamlessResumeAwaitingMediaRef = useRef(false);
   const [shortcutCaptureActive, setShortcutCaptureActive] = useState(false);
   // freeTier/session-limit derived state is computed after auth/catalog hooks
 
@@ -281,6 +292,63 @@ export function App(): JSX.Element {
     record();
     return diagnosticsStore.subscribe(record);
   }, [diagnosticsStore]);
+
+  const saveAutomaticDiagnostics = useCallback(
+    async (phase: "checkpoint" | "completed"): Promise<void> => {
+      await window.openNow.saveDiagnosticsSession({
+        phase,
+        report: streamDiagnosticsRecorder.exportReport(),
+      });
+    },
+    [],
+  );
+
+  useEffect(() => streamDiagnosticsRecorder.subscribeEvents((event) => {
+    if (event.type !== "SESSION_EXIT") return;
+    cursorRelockAfterRecoveryRef.current = false;
+    seamlessResumeAwaitingMediaRef.current = false;
+    void saveAutomaticDiagnostics("completed").catch((error) => {
+      console.warn("[Diagnostics] Automatic session finalization failed:", error);
+    });
+  }), [saveAutomaticDiagnostics]);
+
+  useEffect(() => {
+    if (!session?.sessionId) return;
+    const startedNewSession = streamDiagnosticsRecorder.beginSession(session.sessionId, {
+      gameTitle: streamingGame?.title,
+      requestedResolution: settings.resolution,
+      requestedCodec: settings.codec,
+      targetFps: settings.fps,
+      requestedMaxBitrateMbps: settings.maxBitrateMbps,
+      resilientNetworkProfile:
+        signalingRecoveryRef.current.profileOverride ?? settings.networkRecoveryProfile,
+    });
+    if (startedNewSession) {
+      cursorRelockAfterRecoveryRef.current = false;
+      seamlessResumeAwaitingMediaRef.current = false;
+    }
+  }, [
+    session?.sessionId,
+    settings.codec,
+    settings.fps,
+    settings.maxBitrateMbps,
+    settings.networkRecoveryProfile,
+    settings.resolution,
+    signalingRecoveryRef,
+    streamingGame?.title,
+  ]);
+
+  useEffect(() => {
+    if (!isStreaming || !session?.sessionId) return undefined;
+    const checkpoint = (): void => {
+      void saveAutomaticDiagnostics("checkpoint").catch((error) => {
+        console.warn("[Diagnostics] Automatic checkpoint failed:", error);
+      });
+    };
+    checkpoint();
+    const timer = window.setInterval(checkpoint, DIAGNOSTICS_CHECKPOINT_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, [isStreaming, saveAutomaticDiagnostics, session?.sessionId]);
 
   useEffect(() => {
     if (!isStreaming) return undefined;
@@ -1266,7 +1334,7 @@ export function App(): JSX.Element {
     return () => document.removeEventListener("fullscreenchange", handleFullscreenChange);
   }, []);
 
-  const requestPointerLockCapture = useCallback(async (target: HTMLVideoElement) => {
+  const requestPointerLockCapture = useCallback(async (target: HTMLVideoElement): Promise<boolean> => {
     const lockTarget = getStreamPointerLockTarget(target);
     const requestPointerLockCompat = async (
       options?: { unadjustedMovement?: boolean },
@@ -1289,7 +1357,66 @@ export function App(): JSX.Element {
         throw err;
       })
       .catch(() => {});
+    return isStreamPointerLocked(target);
   }, [sessionFullscreen, setSessionFullscreen, settings.autoFullScreen]);
+
+  useEffect(() => {
+    if (
+      !seamlessResumeAwaitingMediaRef.current
+      || !isStreaming
+      || !diagnosticsVideoReady
+      || !diagnosticsInputReady
+    ) {
+      return;
+    }
+    seamlessResumeAwaitingMediaRef.current = false;
+    streamDiagnosticsRecorder.recordEvent({
+      type: "SEAMLESS_RESUME_SUCCEEDED",
+      detail: "Seamless Resume restored video and input control",
+      values: { profile: SEAMLESS_RESUME_NETWORK_PROFILE },
+    });
+  }, [diagnosticsInputReady, diagnosticsVideoReady, isStreaming]);
+
+  useEffect(() => {
+    const target = videoRef.current;
+    const decision = resolveAutomaticCursorRelock({
+      armed: cursorRelockAfterRecoveryRef.current,
+      streamActive: isStreaming,
+      videoReady: diagnosticsVideoReady,
+      inputReady: diagnosticsInputReady,
+      pointerLocked: Boolean(target && isStreamPointerLocked(target)),
+    });
+    if (decision === "wait") return undefined;
+    if (decision === "preserved") {
+      cursorRelockAfterRecoveryRef.current = false;
+      streamDiagnosticsRecorder.recordEvent({
+        type: "CURSOR_RELOCK_PRESERVED",
+        detail: "Pointer lock remained active after Seamless Resume",
+      });
+      return undefined;
+    }
+
+    const timer = window.setTimeout(() => {
+      const recoveredVideo = videoRef.current;
+      cursorRelockAfterRecoveryRef.current = false;
+      if (!recoveredVideo) return;
+      void requestPointerLockCapture(recoveredVideo).then((restored) => {
+        streamDiagnosticsRecorder.recordEvent({
+          type: restored ? "CURSOR_RELOCK_RESTORED" : "CURSOR_RELOCK_FAILED",
+          detail: restored
+            ? "Pointer lock restored after video and input control recovered"
+            : "Pointer lock could not be restored automatically after recovery",
+        });
+      });
+    }, 75);
+    return () => window.clearTimeout(timer);
+  }, [
+    diagnosticsInputReady,
+    diagnosticsVideoReady,
+    isStreaming,
+    requestPointerLockCapture,
+    videoRef,
+  ]);
 
   const handleRequestPointerLock = useCallback(() => {
     if (videoRef.current) {
@@ -1888,6 +2015,17 @@ export function App(): JSX.Element {
     });
 
     const attemptPromise = (async (): Promise<boolean> => {
+      seamlessResumeAwaitingMediaRef.current = true;
+      const activeVideo = videoRef.current;
+      cursorRelockAfterRecoveryRef.current = Boolean(
+        activeVideo && isStreamPointerLocked(activeVideo),
+      );
+      if (cursorRelockAfterRecoveryRef.current) {
+        streamDiagnosticsRecorder.recordEvent({
+          type: "CURSOR_RELOCK_ARMED",
+          detail: "Pointer lock will be restored after Seamless Resume returns video and input control",
+        });
+      }
       clientRef.current?.dispose();
       clientRef.current = null;
       setStreamStatus("connecting");
