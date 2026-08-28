@@ -625,7 +625,7 @@ export class DomInputCaptureController {
       simulatedAbsY = Math.round((abs.y / abs.height) * serverHeight);
     };
 
-    const flushMouse = (forceReliable = false): boolean => {
+    const flushMouse = (forceReliable = false, scheduledForMs?: number): boolean => {
       const tickNow = performance.now();
       if (!this.dependencies.isInputReady() || !hasPendingMouseMovement()) {
         return false;
@@ -714,8 +714,12 @@ export class DomInputCaptureController {
         return false;
       }
 
-      const expectedSendAt = this.mouseFlushLastSendMs + this.mouseFlushIntervalMs;
-      this.dependencies.recordSchedulingDelay(Math.max(0, tickNow - expectedSendAt));
+      // Only a timer-backed batch has a meaningful scheduling deadline. An
+      // immediate send after the mouse was idle is not late, even though it is
+      // far past the previous packet's nominal interval.
+      if (scheduledForMs !== undefined) {
+        this.dependencies.recordSchedulingDelay(Math.max(0, tickNow - scheduledForMs));
+      }
       this.pendingMouseTimestampUs = null;
       this.mouseCoalescedBatchEntries = 0;
       this.mouseFlushLastSendMs = tickNow;
@@ -744,10 +748,11 @@ export class DomInputCaptureController {
         return;
       }
 
+      const scheduledForMs = this.mouseFlushLastSendMs + this.mouseFlushIntervalMs;
       this.mouseFlushTimer = window.setTimeout(() => {
         this.mouseFlushTimer = null;
         try {
-          flushMouse();
+          flushMouse(false, scheduledForMs);
         } catch (err) {
           this.dependencies.log(`Mouse flush tick failed (non-fatal): ${String(err)}`);
         }

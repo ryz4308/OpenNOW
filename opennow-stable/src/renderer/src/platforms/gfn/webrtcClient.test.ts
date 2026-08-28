@@ -159,7 +159,7 @@ test("quantizeMouseDeltaWithResidual preserves precision across sends", () => {
   assert.ok(Math.abs(c.residual) < 1e-9);
 });
 
-test("adaptive flush on reliable mouse tightens toward min under low pressure", () => {
+test("adaptive flush on reliable mouse returns directly to its base under low pressure", () => {
   const interval = chooseAdaptiveMouseFlushInterval({
     baseIntervalMs: 8,
     currentIntervalMs: 4,
@@ -170,7 +170,7 @@ test("adaptive flush on reliable mouse tightens toward min under low pressure", 
     minIntervalMs: 2,
     maxIntervalMs: 20,
   });
-  assert.equal(interval, 3);
+  assert.equal(interval, 8);
 });
 
 test("adaptive flush keeps base interval when partially-reliable mouse is active", () => {
@@ -198,7 +198,7 @@ test("adaptive flush tightens under low pressure and relaxes under pressure on r
     minIntervalMs: 2,
     maxIntervalMs: 20,
   });
-  assert.equal(lowPressure, 7);
+  assert.equal(lowPressure, 8);
 
   const highPressure = chooseAdaptiveMouseFlushInterval({
     baseIntervalMs: 8,
@@ -211,6 +211,20 @@ test("adaptive flush tightens under low pressure and relaxes under pressure on r
     maxIntervalMs: 20,
   });
   assert.equal(highPressure, 9);
+});
+
+test("timer jitter alone does not back off reliable mouse flush", () => {
+  const interval = chooseAdaptiveMouseFlushInterval({
+    baseIntervalMs: 2,
+    currentIntervalMs: 20,
+    reliableBufferedAmount: 418,
+    schedulingDelayMs: 61_288,
+    canUsePartiallyReliableMouse: false,
+    backpressureThresholdBytes: 64 * 1024,
+    minIntervalMs: 2,
+    maxIntervalMs: 20,
+  });
+  assert.equal(interval, 2);
 });
 
 test("subsampleCoalescedPointerEvents limits large coalesced bursts without dropping movement", () => {

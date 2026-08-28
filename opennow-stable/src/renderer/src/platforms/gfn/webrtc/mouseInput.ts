@@ -18,16 +18,17 @@ export function chooseAdaptiveMouseFlushInterval(params: AdaptiveMouseFlushDecis
     return boundedBase;
   }
 
-  const highPressure =
-    params.reliableBufferedAmount >= params.backpressureThresholdBytes / 2
-    || params.schedulingDelayMs >= 4;
+  // Timer jitter by itself is not DataChannel backpressure. In particular,
+  // renderer stalls must not make mouse batching progressively slower while
+  // the reliable queue is practically empty.
+  const highPressure = params.reliableBufferedAmount >= params.backpressureThresholdBytes / 2;
   if (highPressure) {
     return Math.max(boundedBase, Math.min(params.maxIntervalMs, boundedCurrent + 2));
   }
 
-  const lowPressure = params.reliableBufferedAmount <= 4096 && params.schedulingDelayMs <= 1;
+  const lowPressure = params.reliableBufferedAmount <= 4096;
   if (lowPressure) {
-    return Math.max(params.minIntervalMs, boundedCurrent - 1);
+    return boundedBase;
   }
 
   if (boundedCurrent > boundedBase) {

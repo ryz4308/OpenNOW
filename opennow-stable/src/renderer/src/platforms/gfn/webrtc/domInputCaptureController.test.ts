@@ -74,6 +74,8 @@ function installMouseHarness(options: {
   setPointerLocked: (locked: boolean) => void;
   pendingTimerCount: () => number;
   runNextTimer: (nowMs: number) => void;
+  advanceTo: (nowMs: number) => void;
+  schedulingDelays: number[];
   reliablePayloads: Uint8Array[];
   reliableSinglePayloads: Uint8Array[];
   sentInputTypes: number[];
@@ -123,6 +125,7 @@ function installMouseHarness(options: {
   const reliablePayloads: Uint8Array[] = [];
   const reliableSinglePayloads: Uint8Array[] = [];
   const sentInputTypes: number[] = [];
+  const schedulingDelays: number[] = [];
   const controller = new DomInputCaptureController(
     {
       videoElement: videoElement as unknown as HTMLVideoElement,
@@ -136,7 +139,7 @@ function installMouseHarness(options: {
       getKeyboardLayout: () => undefined,
       getMicState: () => "disabled",
       setWindowInputPaused: () => {},
-      recordSchedulingDelay: () => {},
+      recordSchedulingDelay: (delayMs) => schedulingDelays.push(delayMs),
       refreshClipboardAvailability: async () => false,
       sendReliableSingleInput: (payload) => reliableSinglePayloads.push(payload),
       sendReliable: (payload) => reliablePayloads.push(payload),
@@ -191,6 +194,10 @@ function installMouseHarness(options: {
       nowMs = timerNowMs;
       callback();
     },
+    advanceTo: (nextNowMs) => {
+      nowMs = nextNowMs;
+    },
+    schedulingDelays,
     reliablePayloads,
     reliableSinglePayloads,
     sentInputTypes,
@@ -243,6 +250,27 @@ test("raw direction reversals are preserved instead of filtered into a later jum
     harness.runNextTimer(4);
     assert.deepEqual(harness.sentInputTypes, []);
     assert.equal(harness.controller.getMouseDiagnostics().residualMagnitude, 0);
+  } finally {
+    harness.restoreGlobals();
+  }
+});
+
+test("an idle gap is not reported as mouse scheduling delay", () => {
+  const harness = installMouseHarness({
+    mouseSensitivity: 1,
+    resolution: "1920x1080",
+    mouseFlushIntervalPreference: 4,
+  });
+  try {
+    harness.advanceTo(60_000);
+    harness.dispatchMouseMove(2, 60_000);
+    assert.deepEqual(harness.schedulingDelays, []);
+
+    harness.advanceTo(60_001);
+    harness.dispatchMouseMove(2, 60_001);
+    assert.equal(harness.pendingTimerCount(), 1);
+    harness.runNextTimer(60_006);
+    assert.deepEqual(harness.schedulingDelays, [2]);
   } finally {
     harness.restoreGlobals();
   }
