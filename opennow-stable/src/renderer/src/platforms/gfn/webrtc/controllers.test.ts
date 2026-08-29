@@ -10,7 +10,6 @@ import {
 } from "./decoderPressureController";
 import {
   NetworkRecoveryController,
-  NETWORK_KEYFRAME_COOLDOWN_MS,
   classifyNetworkRecoverySample,
   type NetworkRecoveryState,
 } from "./networkRecoveryController";
@@ -205,13 +204,13 @@ test("network recovery steps bitrate down under repeated loss and slowly restore
   await controller.recover(stableSample);
   assert.equal(keyframeRequests, 0);
   await controller.recover(stableSample);
-  assert.equal(keyframeRequests, 1);
-  assert.equal(states.at(-1)?.recoveryAction, "keyframe_requested");
+  assert.equal(keyframeRequests, 0);
 
   for (let index = 2; index < 20; index++) {
     await controller.recover(stableSample);
   }
 
+  assert.equal(keyframeRequests, 0);
   assert.deepEqual(requestedBitrates, [5_000, 6_000]);
   assert.equal(states.at(-1)?.phase, "RECOVERING");
   assert.equal(states.at(-1)?.recoveryAction, "bitrate_step_up");
@@ -269,9 +268,8 @@ test("network recovery remembers live bitrate is unavailable and never retries i
   assert.equal(states.at(-1)?.liveBitrateSupported, false);
 });
 
-test("network recovery requests one keyframe only after two clean post-burst samples", async () => {
+test("network recovery never requests automatic keyframes", async () => {
   const keyframeRequests: string[] = [];
-  let now = 10_000;
   const controller = new NetworkRecoveryController({
     log: () => {},
     setMaxBitrateKbps: async () => false,
@@ -279,7 +277,6 @@ test("network recovery requests one keyframe only after two clean post-burst sam
       keyframeRequests.push(request.reason);
     },
     onStateChange: () => {},
-    now: () => now,
   });
   controller.initializeBitrate(20_000);
   controller.setProfile("balanced");
@@ -291,62 +288,25 @@ test("network recovery requests one keyframe only after two clean post-burst sam
     decodeFps: 60,
   };
   const stable = { ...bad, packetLossPercent: 0 };
-
-  await controller.recover(bad);
-  await controller.recover(bad);
-  await controller.recover(bad);
-  assert.deepEqual(keyframeRequests, []);
-
-  await controller.recover(stable);
-  assert.deepEqual(keyframeRequests, []);
-  await controller.recover(stable);
-  assert.deepEqual(keyframeRequests, ["network_post_burst_critical_loss"]);
-
-  for (let index = 2; index < 20; index++) {
-    await controller.recover(stable);
-  }
-  now += NETWORK_KEYFRAME_COOLDOWN_MS - 1;
-  await controller.recover(bad);
-  await controller.recover(bad);
-  await controller.recover(stable);
-  await controller.recover(stable);
-  assert.equal(keyframeRequests.length, 1);
-
-  for (let index = 2; index < 20; index++) {
-    await controller.recover(stable);
-  }
-  now += 1;
-  await controller.recover(bad);
-  await controller.recover(bad);
-  await controller.recover(stable);
-  await controller.recover(stable);
-  assert.equal(keyframeRequests.length, 2);
-});
-
-test("network recovery never requests a keyframe for RTT or jitter without packet loss", async () => {
-  const keyframeRequests: string[] = [];
-  const controller = new NetworkRecoveryController({
-    log: () => {},
-    setMaxBitrateKbps: async () => false,
-    requestKeyframe: async (request) => {
-      keyframeRequests.push(request.reason);
-    },
-    onStateChange: () => {},
-  });
-  controller.initializeBitrate(35_000);
-  controller.setProfile("balanced");
-
-  const rttOnly = {
+  const rttAndJitter = {
     packetLossPercent: 0,
     rttMs: 190,
     jitterMs: 30,
     receiveFps: 25,
     decodeFps: 25,
   };
-  await controller.recover(rttOnly);
-  await controller.recover(rttOnly);
-  await controller.recover({ ...rttOnly, rttMs: 45, jitterMs: 2, receiveFps: 60, decodeFps: 60 });
-  await controller.recover({ ...rttOnly, rttMs: 45, jitterMs: 2, receiveFps: 60, decodeFps: 60 });
+
+  await controller.recover(bad);
+  await controller.recover(bad);
+  await controller.recover(bad);
+  for (let index = 0; index < 20; index++) {
+    await controller.recover(stable);
+  }
+  await controller.recover(rttAndJitter);
+  await controller.recover(rttAndJitter);
+  for (let index = 0; index < 20; index++) {
+    await controller.recover(stable);
+  }
 
   assert.deepEqual(keyframeRequests, []);
 });

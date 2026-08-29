@@ -179,13 +179,16 @@ export function buildCompactDiagnosticsSummary(
   const primaryLoss = [...rtpLoss].sort((a, b) => b.packetsLostDelta - a.packetsLostDelta)[0] ?? null;
   const gatewayAtFailure = findNearestGateway(events, failureAtMs);
   const keyframeRequestEvents = rollup?.keyframeRequests
-    ?? events.filter((event) => event.type.startsWith("KEYFRAME_REQUEST")).slice(-20);
+    ?? events.filter((event) => event.type === "KEYFRAME_REQUESTED").slice(-20);
   const keyframeRequests = keyframeRequestEvents.map(compactEvent);
   const decodedKeyframes = rollup?.decodedKeyframes
     ?? events.filter((event) => event.type === "KEYFRAME_DECODED").slice(-20);
-  const keyframeAfterLoss = primaryLoss
-    ? decodedKeyframes.find((event) => event.elapsedMs >= primaryLoss.startedElapsedMs)
-    : undefined;
+  const fallbackKeyframeAfterLossAt = primaryLoss
+    ? decodedKeyframes.find((event) => event.elapsedMs >= primaryLoss.startedElapsedMs)?.timestamp ?? null
+    : null;
+  const keyframeAfterLossAt = rollup?.firstDecodedAfterPrimaryLossAt !== undefined
+    ? rollup.firstDecodedAfterPrimaryLossAt
+    : fallbackKeyframeAfterLossAt;
   const transportEvents = {
     ice: events.filter((event) => event.type.includes("ICE_") || event.type === "ICE_STATE_CHANGED").slice(-30).map(compactEvent),
     webSocket: events.filter((event) => event.type.startsWith("GATEWAY_WEBSOCKET_")).slice(-20).map(compactEvent),
@@ -206,7 +209,7 @@ export function buildCompactDiagnosticsSummary(
     primaryLoss,
     gatewayAtFailure,
     keyframeRequestCount: rollup?.keyframeRequestCount ?? keyframeRequests.length,
-    keyframeReceived: Boolean(keyframeAfterLoss),
+    keyframeReceived: Boolean(keyframeAfterLossAt),
   });
 
   return {
@@ -231,7 +234,7 @@ export function buildCompactDiagnosticsSummary(
     keyframes: {
       requestCount: rollup?.keyframeRequestCount ?? keyframeRequests.length,
       requests: keyframeRequests,
-      newKeyframeAfterPrimaryLossAt: keyframeAfterLoss?.timestamp ?? null,
+      newKeyframeAfterPrimaryLossAt: keyframeAfterLossAt,
     },
     transportEvents,
     cloudMatch: {
@@ -263,6 +266,7 @@ type RtpLossSummary = {
   startedElapsedMs: number;
   durationMs: number | null;
   packetsLostDelta: number;
+  firstDecodedKeyframeAt: string | null;
   gatewayPingAtStart: { success: boolean; latencyMs: number | null; failure: string } | null;
 };
 
@@ -276,6 +280,7 @@ type DiagnosticsRollup = {
   keyframeRequestCount: number;
   keyframeRequests: DiagnosticEvent[];
   decodedKeyframes: DiagnosticEvent[];
+  firstDecodedAfterPrimaryLossAt: string | null | undefined;
 };
 
 function readDiagnosticsRollup(value: unknown): DiagnosticsRollup | null {
@@ -295,6 +300,9 @@ function readDiagnosticsRollup(value: unknown): DiagnosticsRollup | null {
     keyframeRequestCount: numberValue(keyframes.requestCount),
     keyframeRequests: readEvents(keyframes.requests),
     decodedKeyframes: readEvents(keyframes.decoded),
+    firstDecodedAfterPrimaryLossAt: typeof keyframes.firstDecodedAfterPrimaryLossAt === "string"
+      ? keyframes.firstDecodedAfterPrimaryLossAt
+      : keyframes.firstDecodedAfterPrimaryLossAt === null ? null : undefined,
   };
 }
 
@@ -313,6 +321,9 @@ function readRtpLossIncident(value: unknown): RtpLossSummary | null {
     startedElapsedMs: numberValue(value.startedElapsedMs),
     durationMs: value.durationMs === null ? null : numberValue(value.durationMs),
     packetsLostDelta: numberValue(value.packetsLostDelta),
+    firstDecodedKeyframeAt: typeof value.firstDecodedKeyframeAt === "string"
+      ? value.firstDecodedKeyframeAt
+      : null,
     gatewayPingAtStart: gateway,
   };
 }
@@ -327,6 +338,7 @@ function buildRtpLossSummary(events: DiagnosticEvent[]): RtpLossSummary[] {
         startedElapsedMs: event.elapsedMs,
         durationMs: null,
         packetsLostDelta: 0,
+        firstDecodedKeyframeAt: null,
         gatewayPingAtStart: gatewayFromLossStart(event),
       };
       result.push(active);

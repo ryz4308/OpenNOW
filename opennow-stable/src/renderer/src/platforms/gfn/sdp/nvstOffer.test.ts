@@ -221,8 +221,8 @@ test("buildNvstSdp applies current, balanced, and survival recovery profiles", (
   });
   assert.equal(current.maxBitrateKbps, 50000);
   assert.equal(current.allowResolutionDownshift, false);
-  assert.equal(balanced.maxBitrateKbps, 50000);
-  assert.equal(balanced.startupBitrateKbps, 12500);
+  assert.equal(balanced.maxBitrateKbps, 22000);
+  assert.equal(balanced.startupBitrateKbps, 6000);
   assert.equal(balanced.fecRepairPercent, 8);
   assert.equal(balanced.allowResolutionDownshift, false);
   assert.equal(survival.maxBitrateKbps, 16000);
@@ -285,13 +285,13 @@ test("packet microburst guard preserves Current and paces recovery profiles", ()
     rtpNackQueueMaxPackets: 512,
     rtpNackMaxPacketCount: 25,
   });
-  assert.equal(balanced.minNumPacketsPerGroup, 6);
-  assert.equal(balanced.numGroups, 9);
-  assert.equal(balanced.maxDelayUs, 3200);
+  assert.equal(balanced.minNumPacketsPerGroup, 9);
+  assert.equal(balanced.numGroups, 7);
+  assert.equal(balanced.maxDelayUs, 1800);
   assert.equal(balanced.rtpNackMaxPacketCount, 16);
   assert.equal(survival.minNumPacketsPerGroup, 6);
-  assert.equal(survival.numGroups, 10);
-  assert.equal(survival.maxDelayUs, 4500);
+  assert.equal(survival.numGroups, 9);
+  assert.equal(survival.maxDelayUs, 2600);
   assert.equal(survival.rtpNackMaxPacketCount, 10);
 
   const recoverySdp = buildNvstSdp({
@@ -312,8 +312,8 @@ test("packet microburst guard preserves Current and paces recovery profiles", ()
   const lines = new Set(recoverySdp.split("\n"));
   for (const line of [
     "a=packetPacing.minNumPacketsPerGroup:6",
-    "a=packetPacing.numGroups:10",
-    "a=packetPacing.maxDelayUs:4500",
+    "a=packetPacing.numGroups:9",
+    "a=packetPacing.maxDelayUs:2600",
     "a=packetPacing.minNumPacketsFrame:5",
     "a=video.rtpNackQueueLength:512",
     "a=video.rtpNackQueueMaxPackets:256",

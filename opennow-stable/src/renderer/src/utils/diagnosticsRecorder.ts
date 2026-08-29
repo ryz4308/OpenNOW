@@ -40,6 +40,7 @@ interface RtpLossIncidentRollup {
   startedElapsedMs: number;
   durationMs: number | null;
   packetsLostDelta: number;
+  firstDecodedKeyframeAt: string | null;
   gatewayPingAtStart: {
     success: boolean;
     latencyMs: number | null;
@@ -51,6 +52,7 @@ interface ActiveRtpLossIncident {
   startedAtMs: number;
   initialPacketsLost: number;
   lastLossAtMs: number;
+  firstDecodedKeyframeAt: string | null;
   gatewayPingAtStart: RtpLossIncidentRollup["gatewayPingAtStart"];
 }
 
@@ -202,7 +204,7 @@ export class StreamDiagnosticsRecorder {
   ): Record<string, unknown> {
     const finishedAt = samples.at(-1)?.timestamp ?? new Date(generatedAtMs).toISOString();
     return {
-      schemaVersion: 7,
+      schemaVersion: 8,
       generatedAt: new Date(generatedAtMs).toISOString(),
       captureStartedAt: new Date(this.startedAtMs).toISOString(),
       captureFinishedAt: finishedAt,
@@ -333,10 +335,14 @@ export class StreamDiagnosticsRecorder {
         this.rtpLossBurstCooldownUntilMs = nowMs + INCIDENT_BURST_COOLDOWN_MS;
       }
       if (!this.rtpLossIncident) {
+        const latestDecodedKeyframe = this.recentDecodedKeyframes.at(-1);
         this.rtpLossIncident = {
           startedAtMs: nowMs,
           initialPacketsLost: previous.packetsLost,
           lastLossAtMs: nowMs,
+          firstDecodedKeyframeAt: latestDecodedKeyframe?.elapsedMs === nowMs - this.startedAtMs
+            ? latestDecodedKeyframe.timestamp
+            : null,
           gatewayPingAtStart: this.lastGatewayPing ? {
             success: this.lastGatewayPing.success,
             latencyMs: this.lastGatewayPing.latencyMs ?? null,
@@ -372,6 +378,7 @@ export class StreamDiagnosticsRecorder {
         startedElapsedMs: Math.max(0, incident.startedAtMs - this.startedAtMs),
         durationMs: Math.max(0, nowMs - incident.startedAtMs),
         packetsLostDelta: Math.max(0, current.packetsLost - incident.initialPacketsLost),
+        firstDecodedKeyframeAt: incident.firstDecodedKeyframeAt,
         gatewayPingAtStart: incident.gatewayPingAtStart,
       });
       this.pushEvent(nowMs, "RTP_LOSS_ENDED", "Inbound RTP packet loss stopped increasing", {
@@ -505,12 +512,20 @@ export class StreamDiagnosticsRecorder {
     };
     this.totalEventCount++;
     this.eventTypeCounts.set(type, (this.eventTypeCounts.get(type) ?? 0) + 1);
-    if (type.startsWith("KEYFRAME_REQUEST")) {
+    if (type === "KEYFRAME_REQUESTED") {
       this.recentKeyframeRequests.push(event);
       if (this.recentKeyframeRequests.length > 20) this.recentKeyframeRequests.shift();
     } else if (type === "KEYFRAME_DECODED") {
       this.recentDecodedKeyframes.push(event);
       if (this.recentDecodedKeyframes.length > 20) this.recentDecodedKeyframes.shift();
+      if (this.rtpLossIncident && this.rtpLossIncident.firstDecodedKeyframeAt === null) {
+        this.rtpLossIncident.firstDecodedKeyframeAt = event.timestamp;
+      }
+      for (const incident of this.completedRtpLossIncidents) {
+        if (incident.firstDecodedKeyframeAt === null && incident.startedElapsedMs <= event.elapsedMs) {
+          incident.firstDecodedKeyframeAt = event.timestamp;
+        }
+      }
     }
     this.events.push(event);
     if (this.events.length > MAX_EVENTS) this.events.shift();
@@ -578,14 +593,13 @@ export class StreamDiagnosticsRecorder {
         startedElapsedMs: Math.max(0, this.rtpLossIncident.startedAtMs - this.startedAtMs),
         durationMs: Math.max(0, generatedAtMs - this.rtpLossIncident.startedAtMs),
         packetsLostDelta: Math.max(0, latestPacketsLost - this.rtpLossIncident.initialPacketsLost),
+        firstDecodedKeyframeAt: this.rtpLossIncident.firstDecodedKeyframeAt,
         gatewayPingAtStart: this.rtpLossIncident.gatewayPingAtStart,
       });
     }
     const primary = [...incidents]
       .sort((left, right) => right.packetsLostDelta - left.packetsLostDelta)[0] ?? null;
-    const keyframeRequestCount = [...this.eventTypeCounts.entries()]
-      .filter(([type]) => type.startsWith("KEYFRAME_REQUEST"))
-      .reduce((total, [, count]) => total + count, 0);
+    const keyframeRequestCount = this.eventTypeCounts.get("KEYFRAME_REQUESTED") ?? 0;
 
     return {
       totalEventCount: this.totalEventCount,
@@ -602,6 +616,7 @@ export class StreamDiagnosticsRecorder {
         requestCount: keyframeRequestCount,
         requests: this.recentKeyframeRequests,
         decoded: this.recentDecodedKeyframes,
+        firstDecodedAfterPrimaryLossAt: primary?.firstDecodedKeyframeAt ?? null,
       },
     };
   }

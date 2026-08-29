@@ -147,7 +147,7 @@ test("records network and renderer incidents without exposing the raw session id
   assert.equal(events.some((event) => event.type === "GATEWAY_PING"), true);
   const gatewayEvent = events.find((event) => event.type === "GATEWAY_WEBSOCKET_CONNECTED");
   assert.deepEqual(gatewayEvent?.values, { candidateType: "srflx", protocol: "udp" });
-  assert.equal(report.schemaVersion, 7);
+  assert.equal(report.schemaVersion, 8);
 
   const summary = report.summary as {
     sampleCount: number;
@@ -252,10 +252,25 @@ test("lifetime rollup survives eviction from the 5000-event detail ring", () => 
     packetsReceived: 1_200,
     packetsLost: 9,
   }, startedAt + 2_000);
+  recorder.record({
+    ...defaultDiagnostics(),
+    sessionId: "rollup-test",
+    packetsReceived: 1_300,
+    packetsLost: 9,
+    keyFramesDecoded: 1,
+  }, startedAt + 2_200);
+  recorder.recordEvent({
+    type: "keyframe requested",
+    detail: "post-burst keyframe",
+  }, startedAt + 2_300);
+  recorder.recordEvent({
+    type: "keyframe request attempt",
+    detail: "signaling attempt",
+  }, startedAt + 2_301);
   recorder.recordEvent({
     type: "keyframe request sent",
-    detail: "post-burst keyframe",
-  }, startedAt + 2_100);
+    detail: "signaling accepted",
+  }, startedAt + 2_302);
 
   for (let index = 0; index < 5_100; index += 1) {
     recorder.recordEvent({ type: "diagnostic event", detail: `event ${index}` }, startedAt + 3_000 + index);
@@ -270,6 +285,9 @@ test("lifetime rollup survives eviction from the 5000-event detail ring", () => 
   assert.equal(report.rollup.rtpLoss.incidentCount, 1);
   assert.equal(report.rollup.rtpLoss.packetsLostDelta, 9);
   assert.equal(report.rollup.rtpLoss.primary.packetsLostDelta, 9);
+  assert.equal(report.rollup.rtpLoss.primary.firstDecodedKeyframeAt, "2026-08-28T12:00:02.200Z");
   assert.equal(report.rollup.keyframes.requestCount, 1);
   assert.equal(report.rollup.keyframes.requests.length, 1);
+  assert.equal(report.rollup.keyframes.requests[0].type, "KEYFRAME_REQUESTED");
+  assert.equal(report.rollup.keyframes.firstDecodedAfterPrimaryLossAt, "2026-08-28T12:00:02.200Z");
 });

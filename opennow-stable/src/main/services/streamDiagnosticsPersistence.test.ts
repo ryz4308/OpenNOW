@@ -28,7 +28,7 @@ function event(
 
 function report(events: ReturnType<typeof event>[]) {
   return {
-    schemaVersion: 6,
+    schemaVersion: 8,
     captureStartedAt: startedAt,
     captureFinishedAt: new Date(Date.parse(startedAt) + 10_000).toISOString(),
     context: { resilientNetworkProfile: "survival" },
@@ -92,6 +92,7 @@ test("classifies a missing post-request keyframe as decoder/keyframe", () => {
     event(900, "GATEWAY_PING", "gateway replied", { success: true, latencyMs: 1, failure: "none" }),
     event(1_000, "RTP_LOSS_STARTED", "loss", { gatewaySuccess: true, gatewayLatencyMs: 1 }),
     event(1_000, "RTP_LOSS_INCREMENT", "lost 1", { delta: 1 }),
+    event(1_050, "KEYFRAME_REQUESTED", "requested"),
     event(1_100, "KEYFRAME_REQUEST_SENT", "sent"),
   ]), "/diagnostics/full.json") as any;
 
@@ -105,10 +106,11 @@ test("uses lifetime rollup when early loss events were evicted from the detail r
     startedElapsedMs: 1_000,
     durationMs: 2_000,
     packetsLostDelta: 1_234,
+    firstDecodedKeyframeAt: "2026-08-28T12:00:03.400Z",
     gatewayPingAtStart: { success: true, latencyMs: 2, failure: "none" },
   };
-  const keyframeRequest = event(3_100, "KEYFRAME_REQUEST_SENT", "post-burst request");
-  const decodedKeyframe = event(3_400, "KEYFRAME_DECODED", "decoded", { delta: 1 });
+  const keyframeRequest = event(3_100, "KEYFRAME_REQUESTED", "post-burst request");
+  const retainedDecodedKeyframe = event(9_000, "KEYFRAME_DECODED", "later decoded", { delta: 1 });
   const summary = buildCompactDiagnosticsSummary({
     ...report([
       event(8_000, "GATEWAY_PING", "gateway replied", { success: true, latencyMs: 2, failure: "none" }),
@@ -127,7 +129,8 @@ test("uses lifetime rollup when early loss events were evicted from the detail r
       keyframes: {
         requestCount: 21,
         requests: [keyframeRequest],
-        decoded: [decodedKeyframe],
+        decoded: [retainedDecodedKeyframe],
+        firstDecodedAfterPrimaryLossAt: "2026-08-28T12:00:03.400Z",
       },
     },
   }, "/diagnostics/full.json") as any;

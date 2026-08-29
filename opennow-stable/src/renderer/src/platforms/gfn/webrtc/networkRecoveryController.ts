@@ -55,11 +55,10 @@ export interface NetworkRecoveryDecision {
 }
 
 const BAD_CONSECUTIVE_POLLS = 2;
-const POST_BURST_STABLE_POLLS = 2;
+const RECOVERING_CONSECUTIVE_POLLS = 5;
 const STABLE_CONSECUTIVE_POLLS = 20;
 const DOWN_COOLDOWN_MS = 2_500;
 const UP_COOLDOWN_MS = 30_000;
-export const NETWORK_KEYFRAME_COOLDOWN_MS = 25_000;
 const RECOVERY_MIN_BITRATE_KBPS = 5_000;
 const RECOVERY_STEP_UP_FACTOR = 1.15;
 
@@ -112,9 +111,6 @@ export class NetworkRecoveryController {
   private recoveryAttempts = 0;
   private lastDownshiftAtMs = Number.NEGATIVE_INFINITY;
   private lastUpshiftAtMs = Number.NEGATIVE_INFINITY;
-  private lastKeyframeRequestAtMs = Number.NEGATIVE_INFINITY;
-  private postBurstKeyframePending = false;
-  private postBurstKeyframeReason = "network_burst";
   private negotiatedMaxBitrateKbps = OFFICIAL_MIN_BITRATE_KBPS;
   private currentBitrateCeilingKbps = OFFICIAL_MIN_BITRATE_KBPS;
   private recoveryAction: NetworkRecoveryAction = "none";
@@ -136,8 +132,6 @@ export class NetworkRecoveryController {
       this.recoveryAction = "none";
       this.badConsecutivePolls = 0;
       this.stableConsecutivePolls = 0;
-      this.postBurstKeyframePending = false;
-      this.postBurstKeyframeReason = "network_burst";
     }
     this.dependencies.log(`Network recovery profile: ${profile}`);
     this.emitState();
@@ -153,8 +147,6 @@ export class NetworkRecoveryController {
     this.badConsecutivePolls = 0;
     this.stableConsecutivePolls = 0;
     this.recoveryAttempts = 0;
-    this.postBurstKeyframePending = false;
-    this.postBurstKeyframeReason = "network_burst";
     this.recoveryAction = "none";
     this.liveBitrateSupported = null;
     this.emitState();
@@ -168,9 +160,6 @@ export class NetworkRecoveryController {
     this.recoveryAttempts = 0;
     this.lastDownshiftAtMs = Number.NEGATIVE_INFINITY;
     this.lastUpshiftAtMs = Number.NEGATIVE_INFINITY;
-    this.lastKeyframeRequestAtMs = Number.NEGATIVE_INFINITY;
-    this.postBurstKeyframePending = false;
-    this.postBurstKeyframeReason = "network_burst";
     this.negotiatedMaxBitrateKbps = OFFICIAL_MIN_BITRATE_KBPS;
     this.currentBitrateCeilingKbps = OFFICIAL_MIN_BITRATE_KBPS;
     this.recoveryAction = "none";
@@ -216,16 +205,7 @@ export class NetworkRecoveryController {
         return;
       }
 
-      const enteringBurst = this.phase !== "BURST";
       this.phase = "BURST";
-      if (enteringBurst) {
-        this.postBurstKeyframePending = false;
-        this.postBurstKeyframeReason = "network_burst";
-      }
-      if (this.shouldRequestPostBurstKeyframe(sample)) {
-        this.postBurstKeyframePending = true;
-        this.postBurstKeyframeReason = decision.reason;
-      }
       await this.stepDown(decision);
       return;
     }
@@ -235,60 +215,21 @@ export class NetworkRecoveryController {
     if (this.phase === "WARNING") {
       this.phase = "STABLE";
       this.recoveryAction = "none";
-      this.postBurstKeyframePending = false;
       this.emitState();
       return;
     }
 
     if (
       (this.phase === "BURST" || this.phase === "RECOVERING")
-      && this.stableConsecutivePolls >= POST_BURST_STABLE_POLLS
+      && this.stableConsecutivePolls >= RECOVERING_CONSECUTIVE_POLLS
     ) {
-      const leavingBurst = this.phase === "BURST";
       this.phase = "RECOVERING";
       this.recoveryAction = "none";
       this.emitState();
-      if (leavingBurst) {
-        await this.requestPostBurstKeyframe();
-      }
     }
 
     if (this.phase === "RECOVERING" && this.stableConsecutivePolls >= STABLE_CONSECUTIVE_POLLS) {
       await this.stepUp();
-    }
-  }
-
-  private shouldRequestPostBurstKeyframe(sample: NetworkRecoverySample): boolean {
-    const packetLoss = Math.max(0, sample.packetLossPercent);
-    const receiveFps = Math.max(0, sample.receiveFps);
-    const decodeFps = Math.max(0, sample.decodeFps);
-    const damagedVideo = receiveFps > 0 && decodeFps > 0 && receiveFps <= 30 && decodeFps <= 30;
-    return packetLoss >= 2 || (packetLoss >= 1 && damagedVideo);
-  }
-
-  private async requestPostBurstKeyframe(): Promise<void> {
-    if (!this.postBurstKeyframePending) {
-      return;
-    }
-    this.postBurstKeyframePending = false;
-    const now = this.dependencies.now?.() ?? performance.now();
-    if (now - this.lastKeyframeRequestAtMs < NETWORK_KEYFRAME_COOLDOWN_MS) {
-      return;
-    }
-
-    const reason = this.postBurstKeyframeReason;
-    try {
-      await this.dependencies.requestKeyframe({
-        reason: `network_post_burst_${reason}`,
-        backlogFrames: 0,
-        attempt: this.recoveryAttempts + 1,
-      });
-      this.lastKeyframeRequestAtMs = now;
-      this.recoveryAction = "keyframe_requested";
-      this.dependencies.log(`Network recovery requested one post-burst keyframe (${reason})`);
-      this.emitState();
-    } catch (error) {
-      this.dependencies.log(`Network recovery keyframe request failed (non-fatal): ${String(error)}`);
     }
   }
 
@@ -333,7 +274,6 @@ export class NetworkRecoveryController {
     if (this.liveBitrateSupported === false) {
       this.phase = "STABLE";
       this.recoveryAction = "none";
-      this.postBurstKeyframePending = false;
       this.emitState();
       return;
     }
@@ -344,7 +284,6 @@ export class NetworkRecoveryController {
     if (this.currentBitrateCeilingKbps >= this.negotiatedMaxBitrateKbps) {
       this.phase = "STABLE";
       this.recoveryAction = "none";
-      this.postBurstKeyframePending = false;
       this.emitState();
       return;
     }
@@ -362,7 +301,6 @@ export class NetworkRecoveryController {
       this.liveBitrateSupported = false;
       this.phase = "STABLE";
       this.recoveryAction = "none";
-      this.postBurstKeyframePending = false;
       this.emitState();
       return;
     }
@@ -372,9 +310,6 @@ export class NetworkRecoveryController {
     this.currentBitrateCeilingKbps = next;
     this.phase = next < this.negotiatedMaxBitrateKbps ? "RECOVERING" : "STABLE";
     this.recoveryAction = "bitrate_step_up";
-    if (this.phase === "STABLE") {
-      this.postBurstKeyframePending = false;
-    }
     this.dependencies.log(
       `Network recovery: bitrate ceiling stepped up ${previous} -> ${next} kbps`,
     );
