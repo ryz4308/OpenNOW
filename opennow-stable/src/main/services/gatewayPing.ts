@@ -6,6 +6,10 @@ import type { GatewayPingResult } from "@shared/gfn";
 
 const execFileAsync = promisify(execFile);
 const COMMAND_TIMEOUT_MS = 2_000;
+const DEFAULT_GATEWAY_REFRESH_AFTER_FAILURES = 3;
+
+let cachedDefaultGateway: string | null = null;
+let consecutiveProbeFailures = 0;
 
 export function parseWindowsDefaultGateway(output: string): string | null {
   const rows = output.split(/\r?\n/);
@@ -47,10 +51,22 @@ async function discoverDefaultGateway(): Promise<string | null> {
   return parseUnixDefaultGateway(stdout);
 }
 
+async function getCachedDefaultGateway(): Promise<string | null> {
+  if (cachedDefaultGateway) {
+    return cachedDefaultGateway;
+  }
+
+  const gateway = await discoverDefaultGateway();
+  if (gateway) {
+    cachedDefaultGateway = gateway;
+  }
+  return gateway;
+}
+
 export async function pingDefaultGateway(): Promise<GatewayPingResult> {
   const measuredAtMs = Date.now();
   try {
-    const gateway = await discoverDefaultGateway();
+    const gateway = await getCachedDefaultGateway();
     if (!gateway) return { measuredAtMs, success: false, latencyMs: null, failure: "gateway-not-found" };
     const args = platform() === "win32"
       ? ["-n", "1", "-w", "1000", gateway]
@@ -62,6 +78,7 @@ export async function pingDefaultGateway(): Promise<GatewayPingResult> {
       timeout: COMMAND_TIMEOUT_MS,
       windowsHide: true,
     });
+    consecutiveProbeFailures = 0;
     return {
       measuredAtMs,
       success: true,
@@ -69,6 +86,11 @@ export async function pingDefaultGateway(): Promise<GatewayPingResult> {
       failure: "none",
     };
   } catch (error) {
+    consecutiveProbeFailures += 1;
+    if (consecutiveProbeFailures >= DEFAULT_GATEWAY_REFRESH_AFTER_FAILURES) {
+      cachedDefaultGateway = null;
+      consecutiveProbeFailures = 0;
+    }
     const code = typeof error === "object" && error !== null && "code" in error
       ? String((error as { code?: unknown }).code)
       : "";

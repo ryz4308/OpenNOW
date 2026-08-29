@@ -122,7 +122,9 @@ export {
 } from "./webrtc/inputChannelPolicy";
 
 const STATS_NORMAL_INTERVAL_MS = 1_000;
-const STATS_BURST_INTERVAL_MS = 500;
+// Loss already increases browser/network work. Keep diagnostics at 1 Hz instead
+// of doubling getStats pressure while the renderer is least able to absorb it.
+const STATS_BURST_INTERVAL_MS = STATS_NORMAL_INTERVAL_MS;
 const STATS_BURST_WINDOW_MS = 5_000;
 const STATS_BURST_COOLDOWN_MS = 30_000;
 

@@ -148,7 +148,9 @@ const FREE_TIER_30_MIN_WARNING_SECONDS = 30 * 60;
 const FREE_TIER_15_MIN_WARNING_SECONDS = 15 * 60;
 const FREE_TIER_FINAL_MINUTE_WARNING_SECONDS = 60;
 const STREAM_WARNING_VISIBILITY_MS = 15 * 1000;
-const DIAGNOSTICS_CHECKPOINT_INTERVAL_MS = 30_000;
+const DIAGNOSTICS_CHECKPOINT_INTERVAL_MS = 120_000;
+const GATEWAY_PROBE_INTERVAL_MS = 15_000;
+const CLOUDMATCH_STATUS_POLL_INTERVAL_MS = 30_000;
 
 type AppPage = "home" | "library" | "settings";
 type ExitPromptState = { open: boolean; gameTitle: string };
@@ -371,7 +373,7 @@ export function App(): JSX.Element {
       if (!stopped) {
         timer = window.setTimeout(
           () => void probe(),
-          streamDiagnosticsRecorder.isIncidentBurstActive() ? 500 : 1_000,
+          GATEWAY_PROBE_INTERVAL_MS,
         );
       }
     };
@@ -1123,7 +1125,7 @@ export function App(): JSX.Element {
         }
       }
       if (!stopped) {
-        timer = window.setTimeout(() => void poll(), 5_000);
+        timer = window.setTimeout(() => void poll(), CLOUDMATCH_STATUS_POLL_INTERVAL_MS);
       }
     };
     void poll();
