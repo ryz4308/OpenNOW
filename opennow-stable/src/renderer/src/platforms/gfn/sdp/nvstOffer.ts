@@ -12,7 +12,6 @@ const ENABLE_DYNAMIC_SPLIT_ENCODE_UPDATES = true;
 export const OFFICIAL_MIN_BITRATE_KBPS = 4000;
 const HIGH_RESOLUTION_PIXEL_COUNT = 2764800; // 2560x1080 / 1920x1440 class
 const HIGH_BITRATE_PACING_THRESHOLD_KBPS = 42000;
-export const BALANCED_RECOVERY_MAX_BITRATE_KBPS = 22000;
 export const SURVIVAL_RECOVERY_MAX_BITRATE_KBPS = 16000;
 
 interface IceCredentials {
@@ -85,10 +84,10 @@ export function resolveNvstPacketMicroburstProfile(params: Pick<NvstParams, "fps
 
   if (recoveryProfile === "balanced") {
     return {
-      minNumPacketsPerGroup: 9,
-      numGroups: Math.max(currentNumGroups, 7),
-      maxDelayUs: 1800,
-      minNumPacketsFrame: 7,
+      minNumPacketsPerGroup: 6,
+      numGroups: Math.max(currentNumGroups, 9),
+      maxDelayUs: 3200,
+      minNumPacketsFrame: 5,
       rtpNackQueueLength: 768,
       rtpNackQueueMaxPackets: 384,
       rtpNackMaxPacketCount: 16,
@@ -97,8 +96,8 @@ export function resolveNvstPacketMicroburstProfile(params: Pick<NvstParams, "fps
 
   return {
     minNumPacketsPerGroup: 6,
-    numGroups: Math.max(currentNumGroups, 9),
-    maxDelayUs: 2600,
+    numGroups: Math.max(currentNumGroups, 10),
+    maxDelayUs: 4500,
     minNumPacketsFrame: 5,
     rtpNackQueueLength: 512,
     rtpNackQueueMaxPackets: 256,
@@ -109,9 +108,9 @@ export function resolveNvstPacketMicroburstProfile(params: Pick<NvstParams, "fps
 /**
  * Resolve the bitrate/FEC envelope sent to NVIDIA in nvstSdp.
  *
- * The resilient profile deliberately leaves headroom below the user's cap so
- * short Wi-Fi bursts do not immediately overflow the path. It also starts at
- * the official 4 Mbps floor and asks the server for moderately stronger FEC.
+ * Recovery profiles are negotiated before the stream starts. Balanced keeps
+ * the user's full quality ceiling and relies on stronger packet pacing;
+ * Survival deliberately reserves bitrate headroom and starts at 4 Mbps.
  * This is applied before session creation; Chromium cannot change the bitrate
  * of the receiver-only video stream through RTCRtpSender.setParameters().
  */
@@ -132,13 +131,16 @@ export function resolveNvstQualityProfile(params: Pick<NvstParams, "maxBitrateKb
   }
 
   if (recoveryProfile === "balanced") {
-    const maxBitrateKbps = Math.max(
-      OFFICIAL_MIN_BITRATE_KBPS,
-      Math.min(requestedMax, BALANCED_RECOVERY_MAX_BITRATE_KBPS),
-    );
+    // Keep the user's full quality ceiling during clean periods. Resilience
+    // comes from the NvST packet pacer and post-burst recovery, not a permanent
+    // 22 Mbps cap that made the tested profile spend too long below 1080p.
+    const maxBitrateKbps = requestedMax;
     return {
       maxBitrateKbps,
-      startupBitrateKbps: Math.min(maxBitrateKbps, 6000),
+      startupBitrateKbps: Math.max(
+        OFFICIAL_MIN_BITRATE_KBPS,
+        Math.round(maxBitrateKbps / 4),
+      ),
       fecRateDropWindow: 5,
       fecRepairMinPercent: 7,
       fecRepairPercent: 8,

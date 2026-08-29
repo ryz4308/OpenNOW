@@ -99,6 +99,48 @@ test("classifies a missing post-request keyframe as decoder/keyframe", () => {
   assert.equal(summary.keyframes.newKeyframeAfterPrimaryLossAt, null);
 });
 
+test("uses lifetime rollup when early loss events were evicted from the detail ring", () => {
+  const primaryLoss = {
+    startedAt: "2026-08-28T12:00:01.000Z",
+    startedElapsedMs: 1_000,
+    durationMs: 2_000,
+    packetsLostDelta: 1_234,
+    gatewayPingAtStart: { success: true, latencyMs: 2, failure: "none" },
+  };
+  const keyframeRequest = event(3_100, "KEYFRAME_REQUEST_SENT", "post-burst request");
+  const decodedKeyframe = event(3_400, "KEYFRAME_DECODED", "decoded", { delta: 1 });
+  const summary = buildCompactDiagnosticsSummary({
+    ...report([
+      event(8_000, "GATEWAY_PING", "gateway replied", { success: true, latencyMs: 2, failure: "none" }),
+      event(10_000, "SESSION_EXIT", "remote ended", { source: "remote", reasonCode: "remote_reason" }),
+    ]),
+    rollup: {
+      totalEventCount: 7_200,
+      retainedEventCount: 5_000,
+      eventsTruncated: true,
+      rtpLoss: {
+        incidentCount: 88,
+        packetsLostDelta: 14_942,
+        incidents: [primaryLoss],
+        primary: primaryLoss,
+      },
+      keyframes: {
+        requestCount: 21,
+        requests: [keyframeRequest],
+        decoded: [decodedKeyframe],
+      },
+    },
+  }, "/diagnostics/full.json") as any;
+
+  assert.deepEqual(summary.eventRetention, { total: 7_200, retained: 5_000, truncated: true });
+  assert.equal(summary.rtpLoss.incidentCount, 88);
+  assert.equal(summary.rtpLoss.packetsLostDelta, 14_942);
+  assert.equal(summary.rtpLoss.primary.packetsLostDelta, 1_234);
+  assert.equal(summary.keyframes.requestCount, 21);
+  assert.equal(summary.keyframes.newKeyframeAfterPrimaryLossAt, "2026-08-28T12:00:03.400Z");
+  assert.equal(summary.probableProblemCategory, "route_or_nvidia");
+});
+
 test("checkpoints and finalizes separate full and compact files after renderer crash", async () => {
   const directory = await mkdtemp(join(tmpdir(), "opennow-diagnostics-"));
   try {

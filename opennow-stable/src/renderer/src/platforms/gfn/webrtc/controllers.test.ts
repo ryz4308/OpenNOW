@@ -188,7 +188,7 @@ test("network recovery steps bitrate down under repeated loss and slowly restore
   now += 3_000;
   await controller.recover(lossySample);
   assert.deepEqual(requestedBitrates, [5_000]);
-  assert.equal(keyframeRequests, 1);
+  assert.equal(keyframeRequests, 0);
   assert.equal(states.at(-1)?.phase, "BURST");
   assert.equal(states.at(-1)?.recoveryAction, "bitrate_step_down");
   assert.equal(states.at(-1)?.targetBitrateKbps, 5_000);
@@ -202,7 +202,13 @@ test("network recovery steps bitrate down under repeated loss and slowly restore
     receiveFps: 60,
     decodeFps: 60,
   };
-  for (let index = 0; index < 20; index++) {
+  await controller.recover(stableSample);
+  assert.equal(keyframeRequests, 0);
+  await controller.recover(stableSample);
+  assert.equal(keyframeRequests, 1);
+  assert.equal(states.at(-1)?.recoveryAction, "keyframe_requested");
+
+  for (let index = 2; index < 20; index++) {
     await controller.recover(stableSample);
   }
 
@@ -258,12 +264,12 @@ test("network recovery remembers live bitrate is unavailable and never retries i
 
   assert.deepEqual(requestedBitrates, [5_000]);
   assert.equal(states.at(-1)?.phase, "BURST");
-  assert.equal(states.at(-1)?.recoveryAction, "live_bitrate_unavailable");
+  assert.equal(states.at(-1)?.recoveryAction, "none");
   assert.equal(states.at(-1)?.targetBitrateKbps, 20_000);
   assert.equal(states.at(-1)?.liveBitrateSupported, false);
 });
 
-test("network recovery requests one keyframe per burst with a 25 second cooldown", async () => {
+test("network recovery requests one keyframe only after two clean post-burst samples", async () => {
   const keyframeRequests: string[] = [];
   let now = 10_000;
   const controller = new NetworkRecoveryController({
@@ -289,23 +295,60 @@ test("network recovery requests one keyframe per burst with a 25 second cooldown
   await controller.recover(bad);
   await controller.recover(bad);
   await controller.recover(bad);
-  assert.deepEqual(keyframeRequests, ["network_critical_loss"]);
+  assert.deepEqual(keyframeRequests, []);
 
-  for (let index = 0; index < 20; index++) {
+  await controller.recover(stable);
+  assert.deepEqual(keyframeRequests, []);
+  await controller.recover(stable);
+  assert.deepEqual(keyframeRequests, ["network_post_burst_critical_loss"]);
+
+  for (let index = 2; index < 20; index++) {
     await controller.recover(stable);
   }
   now += NETWORK_KEYFRAME_COOLDOWN_MS - 1;
   await controller.recover(bad);
   await controller.recover(bad);
+  await controller.recover(stable);
+  await controller.recover(stable);
   assert.equal(keyframeRequests.length, 1);
 
-  for (let index = 0; index < 20; index++) {
+  for (let index = 2; index < 20; index++) {
     await controller.recover(stable);
   }
   now += 1;
   await controller.recover(bad);
   await controller.recover(bad);
+  await controller.recover(stable);
+  await controller.recover(stable);
   assert.equal(keyframeRequests.length, 2);
+});
+
+test("network recovery never requests a keyframe for RTT or jitter without packet loss", async () => {
+  const keyframeRequests: string[] = [];
+  const controller = new NetworkRecoveryController({
+    log: () => {},
+    setMaxBitrateKbps: async () => false,
+    requestKeyframe: async (request) => {
+      keyframeRequests.push(request.reason);
+    },
+    onStateChange: () => {},
+  });
+  controller.initializeBitrate(35_000);
+  controller.setProfile("balanced");
+
+  const rttOnly = {
+    packetLossPercent: 0,
+    rttMs: 190,
+    jitterMs: 30,
+    receiveFps: 25,
+    decodeFps: 25,
+  };
+  await controller.recover(rttOnly);
+  await controller.recover(rttOnly);
+  await controller.recover({ ...rttOnly, rttMs: 45, jitterMs: 2, receiveFps: 60, decodeFps: 60 });
+  await controller.recover({ ...rttOnly, rttMs: 45, jitterMs: 2, receiveFps: 60, decodeFps: 60 });
+
+  assert.deepEqual(keyframeRequests, []);
 });
 
 test("network recovery exposes reconnecting and recovering transitions", () => {

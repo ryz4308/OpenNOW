@@ -147,7 +147,7 @@ test("records network and renderer incidents without exposing the raw session id
   assert.equal(events.some((event) => event.type === "GATEWAY_PING"), true);
   const gatewayEvent = events.find((event) => event.type === "GATEWAY_WEBSOCKET_CONNECTED");
   assert.deepEqual(gatewayEvent?.values, { candidateType: "srflx", protocol: "udp" });
-  assert.equal(report.schemaVersion, 6);
+  assert.equal(report.schemaVersion, 7);
 
   const summary = report.summary as {
     sampleCount: number;
@@ -228,4 +228,48 @@ test("RTP-loss diagnostics burst is bounded and cannot be extended continuously"
   assert.equal(recorder.isIncidentBurstActive(startedAt + 20_001), false);
   recorder.record({ ...defaultDiagnostics(), packetsReceived: 1_400, packetsLost: 4 }, startedAt + 31_000);
   assert.equal(recorder.isIncidentBurstActive(startedAt + 31_001), true);
+});
+
+test("lifetime rollup survives eviction from the 5000-event detail ring", () => {
+  const recorder = new StreamDiagnosticsRecorder();
+  const startedAt = Date.parse("2026-08-28T12:00:00.000Z");
+  recorder.beginSession("rollup-test", { resilientNetworkProfile: "balanced" }, startedAt);
+  recorder.record({
+    ...defaultDiagnostics(),
+    sessionId: "rollup-test",
+    packetsReceived: 1_000,
+  }, startedAt);
+  recorder.record({
+    ...defaultDiagnostics(),
+    sessionId: "rollup-test",
+    packetsReceived: 1_100,
+    packetsLost: 9,
+    packetLossPercent: 8,
+  }, startedAt + 1_000);
+  recorder.record({
+    ...defaultDiagnostics(),
+    sessionId: "rollup-test",
+    packetsReceived: 1_200,
+    packetsLost: 9,
+  }, startedAt + 2_000);
+  recorder.recordEvent({
+    type: "keyframe request sent",
+    detail: "post-burst keyframe",
+  }, startedAt + 2_100);
+
+  for (let index = 0; index < 5_100; index += 1) {
+    recorder.recordEvent({ type: "diagnostic event", detail: `event ${index}` }, startedAt + 3_000 + index);
+  }
+
+  const report = recorder.exportReport(startedAt + 10_000) as any;
+  assert.equal(report.events.length, 5_000);
+  assert.equal(report.events.some((entry: { type: string }) => entry.type === "RTP_LOSS_STARTED"), false);
+  assert.equal(report.summary.eventCount > report.summary.retainedEventCount, true);
+  assert.equal(report.summary.eventsTruncated, true);
+  assert.equal(report.rollup.eventsTruncated, true);
+  assert.equal(report.rollup.rtpLoss.incidentCount, 1);
+  assert.equal(report.rollup.rtpLoss.packetsLostDelta, 9);
+  assert.equal(report.rollup.rtpLoss.primary.packetsLostDelta, 9);
+  assert.equal(report.rollup.keyframes.requestCount, 1);
+  assert.equal(report.rollup.keyframes.requests.length, 1);
 });

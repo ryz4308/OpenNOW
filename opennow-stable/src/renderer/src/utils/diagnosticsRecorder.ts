@@ -35,6 +35,25 @@ interface ActiveIncident {
   detail: string;
 }
 
+interface RtpLossIncidentRollup {
+  startedAt: string;
+  startedElapsedMs: number;
+  durationMs: number | null;
+  packetsLostDelta: number;
+  gatewayPingAtStart: {
+    success: boolean;
+    latencyMs: number | null;
+    failure: string;
+  } | null;
+}
+
+interface ActiveRtpLossIncident {
+  startedAtMs: number;
+  initialPacketsLost: number;
+  lastLossAtMs: number;
+  gatewayPingAtStart: RtpLossIncidentRollup["gatewayPingAtStart"];
+}
+
 const SAMPLE_INTERVAL_MS = 1_000;
 const INCIDENT_SAMPLE_INTERVAL_MS = 500;
 const INCIDENT_BURST_WINDOW_MS = 5_000;
@@ -54,9 +73,14 @@ export class StreamDiagnosticsRecorder {
   private events: DiagnosticEvent[] = [];
   private previous: StreamDiagnostics | null = null;
   private readonly incidents = new Map<string, ActiveIncident>();
+  private totalEventCount = 0;
+  private readonly eventTypeCounts = new Map<string, number>();
+  private completedRtpLossIncidents: RtpLossIncidentRollup[] = [];
+  private recentKeyframeRequests: DiagnosticEvent[] = [];
+  private recentDecodedKeyframes: DiagnosticEvent[] = [];
   private readonly lastSpikeEventAtMs = new Map<string, number>();
   private readonly streamAliases = new Map<string, string>();
-  private rtpLossIncident: { startedAtMs: number; initialPacketsLost: number; lastLossAtMs: number } | null = null;
+  private rtpLossIncident: ActiveRtpLossIncident | null = null;
   private rtpLossBurstUntilMs = Number.NEGATIVE_INFINITY;
   private rtpLossBurstCooldownUntilMs = Number.NEGATIVE_INFINITY;
   private lastGatewayPing: GatewayPingResult | null = null;
@@ -79,6 +103,11 @@ export class StreamDiagnosticsRecorder {
     this.events = [];
     this.previous = null;
     this.incidents.clear();
+    this.totalEventCount = 0;
+    this.eventTypeCounts.clear();
+    this.completedRtpLossIncidents = [];
+    this.recentKeyframeRequests = [];
+    this.recentDecodedKeyframes = [];
     this.lastSpikeEventAtMs.clear();
     this.streamAliases.clear();
     this.rtpLossIncident = null;
@@ -173,7 +202,7 @@ export class StreamDiagnosticsRecorder {
   ): Record<string, unknown> {
     const finishedAt = samples.at(-1)?.timestamp ?? new Date(generatedAtMs).toISOString();
     return {
-      schemaVersion: 6,
+      schemaVersion: 7,
       generatedAt: new Date(generatedAtMs).toISOString(),
       captureStartedAt: new Date(this.startedAtMs).toISOString(),
       captureFinishedAt: finishedAt,
@@ -189,6 +218,7 @@ export class StreamDiagnosticsRecorder {
       ],
       checkpoint,
       summary: this.buildSummary(samples, events),
+      rollup: this.buildLifetimeRollup(generatedAtMs, events.length),
       activeIncidents: [...this.incidents.entries()].map(([type, incident]) => ({
         type,
         startedAt: new Date(incident.startedAtMs).toISOString(),
@@ -307,6 +337,11 @@ export class StreamDiagnosticsRecorder {
           startedAtMs: nowMs,
           initialPacketsLost: previous.packetsLost,
           lastLossAtMs: nowMs,
+          gatewayPingAtStart: this.lastGatewayPing ? {
+            success: this.lastGatewayPing.success,
+            latencyMs: this.lastGatewayPing.latencyMs ?? null,
+            failure: this.lastGatewayPing.failure,
+          } : null,
         };
         this.pushEvent(nowMs, "RTP_LOSS_STARTED", "Inbound RTP packet loss started", {
           packetsLost: current.packetsLost,
@@ -332,6 +367,13 @@ export class StreamDiagnosticsRecorder {
     if (this.rtpLossIncident && delta === 0) {
       const incident = this.rtpLossIncident;
       this.rtpLossIncident = null;
+      this.completedRtpLossIncidents.push({
+        startedAt: new Date(incident.startedAtMs).toISOString(),
+        startedElapsedMs: Math.max(0, incident.startedAtMs - this.startedAtMs),
+        durationMs: Math.max(0, nowMs - incident.startedAtMs),
+        packetsLostDelta: Math.max(0, current.packetsLost - incident.initialPacketsLost),
+        gatewayPingAtStart: incident.gatewayPingAtStart,
+      });
       this.pushEvent(nowMs, "RTP_LOSS_ENDED", "Inbound RTP packet loss stopped increasing", {
         durationMs: Math.max(0, nowMs - incident.startedAtMs),
         quietAfterLastLossMs: Math.max(0, nowMs - incident.lastLossAtMs),
@@ -461,6 +503,15 @@ export class StreamDiagnosticsRecorder {
       detail,
       values,
     };
+    this.totalEventCount++;
+    this.eventTypeCounts.set(type, (this.eventTypeCounts.get(type) ?? 0) + 1);
+    if (type.startsWith("KEYFRAME_REQUEST")) {
+      this.recentKeyframeRequests.push(event);
+      if (this.recentKeyframeRequests.length > 20) this.recentKeyframeRequests.shift();
+    } else if (type === "KEYFRAME_DECODED") {
+      this.recentDecodedKeyframes.push(event);
+      if (this.recentDecodedKeyframes.length > 20) this.recentDecodedKeyframes.shift();
+    }
     this.events.push(event);
     if (this.events.length > MAX_EVENTS) this.events.shift();
     for (const listener of this.eventListeners) listener(event);
@@ -492,12 +543,14 @@ export class StreamDiagnosticsRecorder {
     };
     return {
       sampleCount: samples.length,
-      eventCount: events.length,
+      eventCount: this.totalEventCount,
+      retainedEventCount: events.length,
+      eventsTruncated: this.totalEventCount > events.length,
       durationSeconds: samples.length > 1
         ? Math.round((Date.parse(samples.at(-1)!.timestamp) - Date.parse(samples[0]!.timestamp)) / 1000)
         : 0,
-      incidents: countEvents(events, ["NETWORK_STALL", "RENDER_STALL", "WEBRTC_FREEZE_REPORTED"]),
-      recoveries: events.filter((event) => event.type === "RECOVERY_NOTICED").length,
+      incidents: countEventTypes(this.eventTypeCounts, ["NETWORK_STALL", "RENDER_STALL", "WEBRTC_FREEZE_REPORTED"]),
+      recoveries: this.eventTypeCounts.get("RECOVERY_NOTICED") ?? 0,
       metrics: Object.fromEntries(Object.entries(metrics).map(([name, values]) => [name, summarize(values)])),
       finalCounters: samples.length > 0 ? {
         framesReceived: samples.at(-1)!.framesReceived,
@@ -510,6 +563,46 @@ export class StreamDiagnosticsRecorder {
         freezeCount: samples.at(-1)!.freezeCount,
         totalFreezesDurationMs: samples.at(-1)!.totalFreezesDurationMs,
       } : null,
+    };
+  }
+
+  private buildLifetimeRollup(
+    generatedAtMs: number,
+    retainedEventCount: number,
+  ): Record<string, unknown> {
+    const incidents = [...this.completedRtpLossIncidents];
+    if (this.rtpLossIncident) {
+      const latestPacketsLost = this.previous?.packetsLost ?? this.rtpLossIncident.initialPacketsLost;
+      incidents.push({
+        startedAt: new Date(this.rtpLossIncident.startedAtMs).toISOString(),
+        startedElapsedMs: Math.max(0, this.rtpLossIncident.startedAtMs - this.startedAtMs),
+        durationMs: Math.max(0, generatedAtMs - this.rtpLossIncident.startedAtMs),
+        packetsLostDelta: Math.max(0, latestPacketsLost - this.rtpLossIncident.initialPacketsLost),
+        gatewayPingAtStart: this.rtpLossIncident.gatewayPingAtStart,
+      });
+    }
+    const primary = [...incidents]
+      .sort((left, right) => right.packetsLostDelta - left.packetsLostDelta)[0] ?? null;
+    const keyframeRequestCount = [...this.eventTypeCounts.entries()]
+      .filter(([type]) => type.startsWith("KEYFRAME_REQUEST"))
+      .reduce((total, [, count]) => total + count, 0);
+
+    return {
+      totalEventCount: this.totalEventCount,
+      retainedEventCount,
+      eventsTruncated: this.totalEventCount > retainedEventCount,
+      eventTypeCounts: Object.fromEntries(this.eventTypeCounts),
+      rtpLoss: {
+        incidentCount: incidents.length,
+        packetsLostDelta: incidents.reduce((total, incident) => total + incident.packetsLostDelta, 0),
+        incidents,
+        primary,
+      },
+      keyframes: {
+        requestCount: keyframeRequestCount,
+        requests: this.recentKeyframeRequests,
+        decoded: this.recentDecodedKeyframes,
+      },
     };
   }
 }
@@ -532,8 +625,8 @@ function cloneDiagnostics(stats: StreamDiagnostics): StreamDiagnostics {
   return { ...stats, dataChannels: [...stats.dataChannels] };
 }
 
-function countEvents(events: DiagnosticEvent[], types: string[]): Record<string, number> {
-  return Object.fromEntries(types.map((type) => [type, events.filter((event) => event.type === type).length]));
+function countEventTypes(counts: Map<string, number>, types: string[]): Record<string, number> {
+  return Object.fromEntries(types.map((type) => [type, counts.get(type) ?? 0]));
 }
 
 function summarize(values: number[]): Record<string, number | null> {

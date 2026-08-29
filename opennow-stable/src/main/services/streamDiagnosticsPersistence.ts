@@ -162,10 +162,11 @@ export function buildCompactDiagnosticsSummary(
   fullDiagnosticsPath: string,
 ): JsonObject {
   const events = readEvents(report.events);
+  const rollup = readDiagnosticsRollup(report.rollup);
   const context = isJsonObject(report.context) ? report.context : {};
   const exit = findLast(events, (event) => event.type === "SESSION_EXIT");
   const failureAtMs = exit ? Date.parse(exit.timestamp) : Date.parse(stringValue(report.captureFinishedAt));
-  const rtpLoss = buildRtpLossSummary(events);
+  const rtpLoss = rollup?.rtpLoss ?? buildRtpLossSummary(events);
   const captureStartedMs = Date.parse(stringValue(report.captureStartedAt));
   const captureElapsedMs = Number.isFinite(failureAtMs) && Number.isFinite(captureStartedMs)
     ? Math.max(0, failureAtMs - captureStartedMs)
@@ -177,12 +178,13 @@ export function buildCompactDiagnosticsSummary(
   }
   const primaryLoss = [...rtpLoss].sort((a, b) => b.packetsLostDelta - a.packetsLostDelta)[0] ?? null;
   const gatewayAtFailure = findNearestGateway(events, failureAtMs);
-  const keyframeRequests = events
-    .filter((event) => event.type.startsWith("KEYFRAME_REQUEST"))
-    .slice(-20)
-    .map(compactEvent);
+  const keyframeRequestEvents = rollup?.keyframeRequests
+    ?? events.filter((event) => event.type.startsWith("KEYFRAME_REQUEST")).slice(-20);
+  const keyframeRequests = keyframeRequestEvents.map(compactEvent);
+  const decodedKeyframes = rollup?.decodedKeyframes
+    ?? events.filter((event) => event.type === "KEYFRAME_DECODED").slice(-20);
   const keyframeAfterLoss = primaryLoss
-    ? events.find((event) => event.type === "KEYFRAME_DECODED" && event.elapsedMs >= primaryLoss.startedElapsedMs)
+    ? decodedKeyframes.find((event) => event.elapsedMs >= primaryLoss.startedElapsedMs)
     : undefined;
   const transportEvents = {
     ice: events.filter((event) => event.type.includes("ICE_") || event.type === "ICE_STATE_CHANGED").slice(-30).map(compactEvent),
@@ -203,7 +205,7 @@ export function buildCompactDiagnosticsSummary(
   const probableProblemCategory = classifyProblem({
     primaryLoss,
     gatewayAtFailure,
-    keyframeRequestCount: keyframeRequests.length,
+    keyframeRequestCount: rollup?.keyframeRequestCount ?? keyframeRequests.length,
     keyframeReceived: Boolean(keyframeAfterLoss),
   });
 
@@ -213,12 +215,21 @@ export function buildCompactDiagnosticsSummary(
     captureStartedAt: stringValue(report.captureStartedAt),
     captureFinishedAt: stringValue(report.captureFinishedAt),
     recoveryProfile: networkProfile(context.resilientNetworkProfile),
+    eventRetention: {
+      total: rollup?.totalEventCount ?? events.length,
+      retained: rollup?.retainedEventCount ?? events.length,
+      truncated: rollup?.eventsTruncated ?? false,
+    },
     rtpLoss: {
+      incidentCount: rollup?.rtpLossIncidentCount ?? rtpLoss.length,
+      packetsLostDelta: rollup?.rtpPacketsLostDelta
+        ?? rtpLoss.reduce((total, incident) => total + incident.packetsLostDelta, 0),
       incidents: rtpLoss.map(omitElapsed),
       primary: primaryLoss ? omitElapsed(primaryLoss) : null,
     },
     gatewayPingAtFailure: gatewayAtFailure,
     keyframes: {
+      requestCount: rollup?.keyframeRequestCount ?? keyframeRequests.length,
       requests: keyframeRequests,
       newKeyframeAfterPrimaryLossAt: keyframeAfterLoss?.timestamp ?? null,
     },
@@ -254,6 +265,57 @@ type RtpLossSummary = {
   packetsLostDelta: number;
   gatewayPingAtStart: { success: boolean; latencyMs: number | null; failure: string } | null;
 };
+
+type DiagnosticsRollup = {
+  totalEventCount: number;
+  retainedEventCount: number;
+  eventsTruncated: boolean;
+  rtpLossIncidentCount: number;
+  rtpPacketsLostDelta: number;
+  rtpLoss: RtpLossSummary[];
+  keyframeRequestCount: number;
+  keyframeRequests: DiagnosticEvent[];
+  decodedKeyframes: DiagnosticEvent[];
+};
+
+function readDiagnosticsRollup(value: unknown): DiagnosticsRollup | null {
+  if (!isJsonObject(value)) return null;
+  const rtpLoss = isJsonObject(value.rtpLoss) ? value.rtpLoss : {};
+  const keyframes = isJsonObject(value.keyframes) ? value.keyframes : {};
+  const incidents = Array.isArray(rtpLoss.incidents)
+    ? rtpLoss.incidents.map(readRtpLossIncident).filter((incident): incident is RtpLossSummary => incident !== null)
+    : [];
+  return {
+    totalEventCount: numberValue(value.totalEventCount),
+    retainedEventCount: numberValue(value.retainedEventCount),
+    eventsTruncated: value.eventsTruncated === true,
+    rtpLossIncidentCount: numberValue(rtpLoss.incidentCount),
+    rtpPacketsLostDelta: numberValue(rtpLoss.packetsLostDelta),
+    rtpLoss: incidents,
+    keyframeRequestCount: numberValue(keyframes.requestCount),
+    keyframeRequests: readEvents(keyframes.requests),
+    decodedKeyframes: readEvents(keyframes.decoded),
+  };
+}
+
+function readRtpLossIncident(value: unknown): RtpLossSummary | null {
+  if (!isJsonObject(value) || typeof value.startedAt !== "string") return null;
+  const gateway = isJsonObject(value.gatewayPingAtStart)
+    && typeof value.gatewayPingAtStart.success === "boolean"
+    ? {
+      success: value.gatewayPingAtStart.success,
+      latencyMs: nullableLatency(value.gatewayPingAtStart.latencyMs),
+      failure: stringValue(value.gatewayPingAtStart.failure) || "unknown",
+    }
+    : null;
+  return {
+    startedAt: value.startedAt,
+    startedElapsedMs: numberValue(value.startedElapsedMs),
+    durationMs: value.durationMs === null ? null : numberValue(value.durationMs),
+    packetsLostDelta: numberValue(value.packetsLostDelta),
+    gatewayPingAtStart: gateway,
+  };
+}
 
 function buildRtpLossSummary(events: DiagnosticEvent[]): RtpLossSummary[] {
   const result: RtpLossSummary[] = [];
