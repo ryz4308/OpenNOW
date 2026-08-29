@@ -263,7 +263,7 @@ test("network recovery remembers live bitrate is unavailable and never retries i
 
   assert.deepEqual(requestedBitrates, [5_000]);
   assert.equal(states.at(-1)?.phase, "BURST");
-  assert.equal(states.at(-1)?.recoveryAction, "none");
+  assert.equal(states.at(-1)?.recoveryAction, "live_bitrate_unavailable");
   assert.equal(states.at(-1)?.targetBitrateKbps, 20_000);
   assert.equal(states.at(-1)?.liveBitrateSupported, false);
 });

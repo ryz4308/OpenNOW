@@ -235,6 +235,8 @@ export class NetworkRecoveryController {
 
   private async stepDown(decision: NetworkRecoveryDecision): Promise<void> {
     if (this.liveBitrateSupported === false) {
+      this.recoveryAction = "live_bitrate_unavailable";
+      this.emitState();
       return;
     }
     const now = this.dependencies.now?.() ?? performance.now();
@@ -251,7 +253,7 @@ export class NetworkRecoveryController {
     this.lastDownshiftAtMs = now;
     if (!updated) {
       this.liveBitrateSupported = false;
-      this.recoveryAction = "none";
+      this.recoveryAction = "live_bitrate_unavailable";
       this.dependencies.log(
         `Network recovery cannot apply a live bitrate update; keeping negotiated ceiling ${this.currentBitrateCeilingKbps} kbps for this connection`,
       );
@@ -273,7 +275,7 @@ export class NetworkRecoveryController {
   private async stepUp(): Promise<void> {
     if (this.liveBitrateSupported === false) {
       this.phase = "STABLE";
-      this.recoveryAction = "none";
+      this.recoveryAction = "live_bitrate_unavailable";
       this.emitState();
       return;
     }
@@ -299,8 +301,7 @@ export class NetworkRecoveryController {
     this.lastUpshiftAtMs = now;
     if (!updated) {
       this.liveBitrateSupported = false;
-      this.phase = "STABLE";
-      this.recoveryAction = "none";
+      this.recoveryAction = "live_bitrate_unavailable";
       this.emitState();
       return;
     }
